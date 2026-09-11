@@ -1,0 +1,22 @@
+# Virtual environments and Python build products
+.venv/
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# macOS metadata
+.DS_Store
+._*
+
+# Local muNEXAFS state and dataset analysis sidecars
+.muaxis_recent_scans.json
+.muaxis_sessions.json
+*.muaxis.json
+
+# Generated report folders
+*_report_*/
