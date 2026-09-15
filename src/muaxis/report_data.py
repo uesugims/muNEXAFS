@@ -177,13 +177,15 @@ def build_report_payload(window):
         payload["spectra"][name] = values.copy()
         return {"name": name, "values": values.copy(), "color": color}
 
-    def layer(name, source, condition, image, parameters, profiles, ylabel="OD", display=None):
+    def layer(name, source, condition, image, parameters, profiles, ylabel="OD", display=None, rois=None):
         parameters = _small(parameters)
         item = {"name": name, "source": source, "condition": condition, "image": image,
                 "parameters": parameters, "profiles": [p for p in profiles if p is not None],
                 "profile_ylabel": ylabel, "energies": energies}
         if display:
             item["display"] = display
+        if rois:
+            item["rois"] = list(rois)
         payload["layers"].append(item)
         metadata["analysis_parameters"][name] = parameters
 
@@ -205,14 +207,16 @@ def build_report_payload(window):
         common_frame["ROI bounds (x0, y0, x1, y1)"] = rois
     if transmission is not None:
         layer("Transmission (raw)", "Raw XIM stack", "No transformation",
-              transmission[frame], common_frame, stack_profiles("Transmission", transmission), "Transmission")
+              transmission[frame], common_frame, stack_profiles("Transmission", transmission),
+              "Transmission", rois=rois)
     od_result = getattr(window, "_od_result", None)
     od = getattr(od_result, "optical_density", None)
     if od is not None:
         profiles = stack_profiles("OD", od)
         add_spectrum("I0 — direct beam", getattr(od_result, "i0", None))
         layer("Optical density (OD)", "Transmission + I0", "OD = ln(I0 / I)", od[frame],
-              {**common_frame, "I0 ROI": getattr(window, "_od_roi_bounds", None) or MISSING}, profiles)
+              {**common_frame, "I0 ROI": getattr(window, "_od_roi_bounds", None) or MISSING}, profiles,
+              rois=rois)
     registered = getattr(window, "_registered_stack", None)
     registration = getattr(window, "_registration_config", None)
     if registration is not None:
@@ -365,4 +369,26 @@ def build_report_payload(window):
             payload["mapping_spectra"]["Multivariate_mapping_components"] = used
         layer("SVD/PCA RGB map", params.get("input_source", MISSING), f"{method}; RGB score linear combination",
               getattr(result, "rgb_map", None), params, profiles, "Component amplitude")
+
+    # Per-type raw-image export sets: stacks export every energy frame, maps
+    # export the single map.  Consumed by the report window's per-type image
+    # checkboxes; each selected set is written to its own folder.
+    image_sets = []
+    def add_set(name, kind, data, display=None):
+        if data is not None:
+            image_sets.append({"name": name, "kind": kind, "data": data,
+                               "display": display, "energies": energies})
+    add_set("Transmission", "stack", transmission, {"palette": "Grayscale"})
+    base_od = registered if (registered is not None and od is not None) else od
+    add_set("OD (registered)", "stack", base_od, {"palette": "Grayscale"})
+    add_set("OD (-pre edge)", "stack", presub, {"palette": "Grayscale"})
+    for nm, img in getattr(window, "_premap_maps", {}).items():
+        disp = getattr(window, "_premap_display", {}).get(nm, {"palette": "Jet"})
+        add_set("Peakmap" if "Peak" in nm else "Net absorption", "map", img, disp)
+    add_set("PTEE-R2", "map", getattr(fit, "rgb_y", None) if fit is not None else None)
+    if result is not None and getattr(result, "n_clusters", None) is not None:
+        add_set("PCA-Clustering", "map", getattr(result, "rgb_map", None))
+    elif result is not None:
+        add_set("SVD/PCA", "map", getattr(result, "rgb_map", None))
+    payload["image_sets"] = image_sets
     return payload

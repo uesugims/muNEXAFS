@@ -20,6 +20,17 @@ import numpy as np
 PAGE_WIDTH, PAGE_HEIGHT = 960.0, 540.0
 MARGIN, TABLE_FONT_SIZE, LINE_HEIGHT = 32.0, 10.0, 13.0
 PROFILE_BATCH_SIZE = 6
+# Layer-page layout: image (top) and spectrum (below) stacked in the left
+# column; the parameter table runs tall down the right column and is shrunk to
+# fit on a single page.
+LEFT_X, LEFT_W = MARGIN, 464.0
+IMAGE_TOP, IMAGE_H = 84.0, 250.0
+PROFILE_TOP, PROFILE_H = 350.0, 162.0
+RIGHT_X = 512.0
+RIGHT_TABLE_TOP = 84.0
+RIGHT_TABLE_AVAILABLE = PAGE_HEIGHT - RIGHT_TABLE_TOP - 26.0
+TABLE_MIN_FONT = 5.0
+ROI_COLOR = "#00d0ff"
 _RENDER_LOCK = RLock()
 
 
@@ -111,6 +122,42 @@ def export_layer_images(layers: list[dict], directory: Path) -> list[Path]:
             continue
         path = directory / f"{_unique_name(layer.get('name', 'layer'), used)}.png"
         Image.fromarray(_image_array(layer["image"], layer.get("display"))).save(path)
+        outputs.append(path)
+    return outputs
+
+
+@_serialized
+def export_image_set(image_set: dict, directory: Path) -> list[Path]:
+    """Export one image type into its own folder.
+
+    A ``stack`` set writes one display-faithful PNG per energy frame (named by
+    index and energy); a ``map`` set writes the single map image.  ``directory``
+    is the parent; a sub-folder named after the set is created inside it.
+    """
+    from PIL import Image
+
+    name = str(image_set.get("name", "images"))
+    folder = Path(directory) / _safe_name(name)
+    folder.mkdir(parents=True, exist_ok=True)
+    display = image_set.get("display")
+    data = image_set.get("data")
+    outputs = []
+    if data is None:
+        return outputs
+    if image_set.get("kind") == "stack":
+        stack = np.asarray(data)
+        energies = image_set.get("energies")
+        energies = np.asarray(energies) if energies is not None else None
+        for i in range(len(stack)):
+            suffix = ""
+            if energies is not None and i < energies.size and np.isfinite(energies[i]):
+                suffix = f"_{float(energies[i]):.2f}eV"
+            path = folder / f"{_safe_name(name)}_{i:03d}{suffix}.png"
+            Image.fromarray(_image_array(stack[i], display)).save(path)
+            outputs.append(path)
+    else:
+        path = folder / f"{_safe_name(name)}.png"
+        Image.fromarray(_image_array(data, display)).save(path)
         outputs.append(path)
     return outputs
 
@@ -241,6 +288,10 @@ class ReportPage:
     profile_plot: bytes | None = None
     image_notice: str = ""
     profile_notice: str = ""
+    layout: str = "overview"          # "overview" (full-width) or "layer" (right column)
+    table_x: float = MARGIN
+    table_font: float = TABLE_FONT_SIZE
+    header_height: float = 24.0
 
 
 def _paginate_rows(rows: list[list[str]], widths: list[float], available: float) -> list[list[ReportRow]]:
@@ -262,6 +313,46 @@ def _paginate_rows(rows: list[list[str]], widths: list[float], available: float)
     return pages
 
 
+def _table_rows_at(rows: list[list[str]], widths: list[float], font: float) -> list[ReportRow]:
+    """Wrap each cell at ``font`` and return rows with their pixel heights."""
+    line_h = font + 3.0
+    built = []
+    for raw in rows:
+        wrapped = [_wrap(cell, width - 16, font) for cell, width in zip(raw, widths, strict=True)]
+        count = max(map(len, wrapped)) or 1
+        built.append(ReportRow(["\n".join(cell) for cell in wrapped], count * line_h + 8.0))
+    return built
+
+
+def _fit_table(rows: list[list[str]], widths: list[float], available: float,
+               max_font: float = TABLE_FONT_SIZE, min_font: float = TABLE_MIN_FONT):
+    """Largest font (0.5 pt steps) at which the whole table fits ``available``
+    height on one page; falls back to ``min_font`` if nothing fits."""
+    font = max_font
+    while font >= min_font:
+        built = _table_rows_at(rows, widths, font)
+        header = font + 14.0
+        if header + sum(row.height for row in built) <= available:
+            return font, built, header
+        font -= 0.5
+    # Beyond what even the smallest font can fit: keep the rows that fit on the
+    # single page and replace the remainder with a pointer to the full listing.
+    built = _table_rows_at(rows, widths, min_font)
+    header = min_font + 14.0
+    kept, used = [], header
+    for i, row in enumerate(built):
+        if not kept or used + row.height <= available:
+            kept.append(row); used += row.height
+        else:
+            more = _table_rows_at(
+                [["…", f"{len(built) - i} more parameter(s) omitted here; see the "
+                        "parameter overview page and the exported CSV"]], widths, min_font)[0]
+            if used + more.height <= available:
+                kept.append(more)
+            break
+    return min_font, kept, header
+
+
 def _figure_png(figure) -> bytes:
     from matplotlib.backends.backend_agg import FigureCanvasAgg
 
@@ -279,13 +370,15 @@ def _plot_font(size=10):
 
 def _layer_plot(layer: dict) -> bytes | None:
     from matplotlib.figure import Figure
+    from matplotlib.patches import Rectangle
 
     if layer.get("image") is None:
         return None
     data = np.asarray(layer["image"])
-    figure = Figure(figsize=(7.0, 3.9), dpi=170, facecolor="white")
+    # A squarer figure with tight margins so the map fills the panel (larger).
+    figure = Figure(figsize=(4.9, 3.9), dpi=185, facecolor="white")
     axis = figure.add_subplot(111)
-    figure.subplots_adjust(left=.10, right=.90, bottom=.16, top=.94)
+    figure.subplots_adjust(left=.13, right=.86, bottom=.12, top=.96)
     if data.ndim == 3:
         axis.imshow(_image_array(data), origin="upper", interpolation="nearest", aspect="equal")
     else:
@@ -293,11 +386,17 @@ def _layer_plot(layer: dict) -> bytes | None:
         palette = (layer.get("display") or {}).get("palette", "Grayscale")
         image = axis.imshow(np.ma.masked_invalid(data), origin="upper", interpolation="nearest",
                             aspect="equal", cmap=_palette(str(palette)), vmin=lo, vmax=hi)
-        colorbar = figure.colorbar(image, ax=axis, pad=.035, fraction=.04)
+        colorbar = figure.colorbar(image, ax=axis, pad=.03, fraction=.045)
         colorbar.ax.tick_params(labelsize=9)
         unit = (layer.get("display") or {}).get("units")
         if unit:
             colorbar.set_label(str(unit), fontproperties=_plot_font(9))
+    for number, roi in enumerate(layer.get("rois") or [], 1):
+        x0, y0, x1, y1 = roi
+        axis.add_patch(Rectangle((x0 - 0.5, y0 - 0.5), x1 - x0, y1 - y0,
+                                 fill=False, edgecolor=ROI_COLOR, linewidth=1.6))
+        axis.text(x0, y0 - 1, f"ROI {number}", color=ROI_COLOR, va="bottom", ha="left",
+                  fontproperties=_plot_font(8))
     axis.set_xlabel("X (pixel)", fontproperties=_plot_font())
     axis.set_ylabel("Y (pixel)", fontproperties=_plot_font())
     axis.tick_params(labelsize=9)
@@ -386,27 +485,20 @@ def build_report_pages(layers: list[dict], metadata: dict, *, energies=None) -> 
             )])
         if not rows:
             rows = [["Conditions", "No analysis conditions recorded"]]
-        widths = [230., PAGE_WIDTH - MARGIN * 2 - 230.]
-        conditions = _paginate_rows(rows, widths, 107)
-        batches = [profiles[i:i + PROFILE_BATCH_SIZE] for i in range(0, len(profiles), PROFILE_BATCH_SIZE)] or [[]]
+        # Tall table down the right column: one page per layer, font shrunk to fit.
+        condition_width = 150.0
+        value_width = (PAGE_WIDTH - MARGIN - RIGHT_X) - condition_width
+        widths = [condition_width, value_width]
+        font, built, header_height = _fit_table(rows, widths, RIGHT_TABLE_AVAILABLE)
         layer_image = _layer_plot(layer)
-        profile_images = [_profile_plot(batch, energies, layer.get("profile_ylabel", "Optical density (OD)"))
-                          for batch in batches]
-        count = max(len(conditions), len(batches))
-        for part in range(count):
-            name = f"{index:02d}  {layer.get('name', 'Analysis step')}"
-            if count > 1:
-                name += f" ({part + 1}/{count})"
-            batch_index = min(part, len(batches) - 1)
-            caption = subtitle
-            if len(batches) > 1:
-                start = batch_index * PROFILE_BATCH_SIZE + 1
-                caption = f"Profiles {start}–{min(start + PROFILE_BATCH_SIZE - 1, len(profiles))} of {len(profiles)} | {subtitle}"
-            pages.append(ReportPage(name, caption, ["Analysis condition", "Value"], widths,
-                                    conditions[part] if part < len(conditions) else [], 373,
-                                    layer_image, profile_images[batch_index],
-                                    "No layer image saved" if layer_image is None else "",
-                                    "No profile saved for this step" if not profiles else ""))
+        profile_image = _profile_plot(profiles, energies, layer.get("profile_ylabel", "Optical density (OD)"))
+        name = f"{index:02d}  {layer.get('name', 'Analysis step')}"
+        pages.append(ReportPage(
+            name, subtitle, ["Analysis condition", "Value"], widths, built, RIGHT_TABLE_TOP,
+            layer_image, profile_image,
+            "No layer image saved" if layer_image is None else "",
+            "No profile saved for this step" if not profiles else "",
+            layout="layer", table_x=RIGHT_X, table_font=font, header_height=header_height))
     return pages
 
 
@@ -424,23 +516,24 @@ def _pdf_text(pdf, text: str, x: float, top: float, size: float = 10,
 def _pdf_table(pdf, page: ReportPage):
     from reportlab.lib.colors import HexColor
 
+    x0, font, header_h, width = page.table_x, page.table_font, page.header_height, sum(page.widths)
     y = page.table_top
     pdf.setFillColor(HexColor("#E6EEF3"))
-    pdf.rect(MARGIN, PAGE_HEIGHT - y - 24, sum(page.widths), 24, stroke=0, fill=1)
-    x = MARGIN
-    for text, width in zip(page.columns, page.widths, strict=True):
-        _pdf_text(pdf, text, x + 8, y + 5, TABLE_FONT_SIZE)
-        x += width
-    y += 24
+    pdf.rect(x0, PAGE_HEIGHT - y - header_h, width, header_h, stroke=0, fill=1)
+    x = x0
+    for text, column_width in zip(page.columns, page.widths, strict=True):
+        _pdf_text(pdf, text, x + 8, y + (header_h - font) / 2, font)
+        x += column_width
+    y += header_h
     for number, row in enumerate(page.rows):
         pdf.setFillColor(HexColor("#F5F8FA" if number % 2 == 0 else "#FFFFFF"))
-        pdf.rect(MARGIN, PAGE_HEIGHT - y - row.height, sum(page.widths), row.height, stroke=0, fill=1)
-        x = MARGIN
-        for text, width in zip(row.cells, page.widths, strict=True):
-            _pdf_text(pdf, text, x + 8, y + 6, TABLE_FONT_SIZE)
-            x += width
+        pdf.rect(x0, PAGE_HEIGHT - y - row.height, width, row.height, stroke=0, fill=1)
+        x = x0
+        for text, column_width in zip(row.cells, page.widths, strict=True):
+            _pdf_text(pdf, text, x + 8, y + 5, font)
+            x += column_width
         pdf.setStrokeColor(HexColor("#D6E0E7"))
-        pdf.line(MARGIN, PAGE_HEIGHT - y - row.height, PAGE_WIDTH - MARGIN, PAGE_HEIGHT - y - row.height)
+        pdf.line(x0, PAGE_HEIGHT - y - row.height, x0 + width, PAGE_HEIGHT - y - row.height)
         y += row.height
 
 
@@ -458,16 +551,20 @@ def export_pdf(layers: list[dict], metadata: dict, directory: Path, filename: st
     for index, page in enumerate(pages, 1):
         _pdf_text(pdf, page.title, MARGIN, 19, 20, PAGE_WIDTH - 2 * MARGIN)
         _pdf_text(pdf, page.subtitle, MARGIN, 55, 10, PAGE_WIDTH - 2 * MARGIN, "#526B7A")
-        if page.table_top > 200:
-            _pdf_text(pdf, "Layer image", MARGIN, 83, 11)
-            _pdf_text(pdf, "Profiles", 492, 83, 11)
-            for data, notice, x in ((page.layer_plot, page.image_notice, MARGIN),
-                                    (page.profile_plot, page.profile_notice, 492)):
-                if data:
-                    pdf.drawImage(ImageReader(BytesIO(data)), x, PAGE_HEIGHT - 350,
-                                  width=436, height=245, preserveAspectRatio=True, anchor="c")
-                else:
-                    _pdf_text(pdf, notice, x + 15, 210, 12, 400, "#637381")
+        if page.layout == "layer":
+            # Left column: layer image on top, spectrum below (stacked).
+            _pdf_text(pdf, "Layer image", LEFT_X, IMAGE_TOP - 14, 11)
+            if page.layer_plot:
+                pdf.drawImage(ImageReader(BytesIO(page.layer_plot)), LEFT_X, PAGE_HEIGHT - IMAGE_TOP - IMAGE_H,
+                              width=LEFT_W, height=IMAGE_H, preserveAspectRatio=True, anchor="c")
+            else:
+                _pdf_text(pdf, page.image_notice, LEFT_X + 15, IMAGE_TOP + IMAGE_H / 2, 12, 400, "#637381")
+            _pdf_text(pdf, "Profiles", LEFT_X, PROFILE_TOP - 14, 11)
+            if page.profile_plot:
+                pdf.drawImage(ImageReader(BytesIO(page.profile_plot)), LEFT_X, PAGE_HEIGHT - PROFILE_TOP - PROFILE_H,
+                              width=LEFT_W, height=PROFILE_H, preserveAspectRatio=True, anchor="c")
+            else:
+                _pdf_text(pdf, page.profile_notice, LEFT_X + 15, PROFILE_TOP + PROFILE_H / 2, 12, 400, "#637381")
         _pdf_table(pdf, page)
         _pdf_text(pdf, "muNEXAFS | STXM–NEXAFS analysis", MARGIN, 518, 8, color="#637381")
         _pdf_text(pdf, f"{index} / {len(pages)}", PAGE_WIDTH - 80, 518, 8, color="#637381")
@@ -500,11 +597,12 @@ def _pptx_table(slide, page: ReportPage):
     from pptx.util import Pt
     from pptx.enum.text import MSO_ANCHOR
 
-    table = slide.shapes.add_table(len(page.rows) + 1, len(page.columns), Pt(MARGIN), Pt(page.table_top),
-                                   Pt(sum(page.widths)), Pt(24 + sum(row.height for row in page.rows))).table
+    font, header_h = page.table_font, page.header_height
+    table = slide.shapes.add_table(len(page.rows) + 1, len(page.columns), Pt(page.table_x), Pt(page.table_top),
+                                   Pt(sum(page.widths)), Pt(header_h + sum(row.height for row in page.rows))).table
     for column, width in zip(table.columns, page.widths, strict=True):
         column.width = Pt(width)
-    table.rows[0].height = Pt(24)
+    table.rows[0].height = Pt(header_h)
     for index, row in enumerate(page.rows, 1):
         table.rows[index].height = Pt(row.height)
     for row_index, cells in enumerate([page.columns] + [row.cells for row in page.rows]):
@@ -512,17 +610,17 @@ def _pptx_table(slide, page: ReportPage):
             cell = table.cell(row_index, col_index)
             cell.text = text
             cell.margin_left = cell.margin_right = Pt(8)
-            cell.margin_top = cell.margin_bottom = Pt(5)
+            cell.margin_top = cell.margin_bottom = Pt(3)
             cell.vertical_anchor = MSO_ANCHOR.TOP
             cell.fill.solid()
             cell.fill.fore_color.rgb = RGBColor.from_string("E6EEF3" if row_index == 0 else
                                                            ("F5F8FA" if row_index % 2 else "FFFFFF"))
             for paragraph in cell.text_frame.paragraphs:
                 paragraph.font.name = _report_font()[2]
-                paragraph.font.size = Pt(TABLE_FONT_SIZE)
+                paragraph.font.size = Pt(font)
                 paragraph.font.bold = row_index == 0
                 paragraph.font.color.rgb = RGBColor.from_string("172B3A")
-                paragraph.line_spacing = Pt(LINE_HEIGHT)
+                paragraph.line_spacing = Pt(font + 3.0)
                 paragraph.space_after = paragraph.space_before = Pt(0)
 
 
@@ -540,19 +638,19 @@ def export_pptx(layers: list[dict], metadata: dict, directory: Path, filename: s
         slide = presentation.slides.add_slide(presentation.slide_layouts[6])
         _pptx_text(slide, page.title, MARGIN, 19, PAGE_WIDTH - 2 * MARGIN, 32, 20)
         _pptx_text(slide, page.subtitle, MARGIN, 55, PAGE_WIDTH - 2 * MARGIN, 25, 10, "526B7A")
-        if page.table_top > 200:
-            _pptx_text(slide, "Layer image", MARGIN, 83, 436, 18, 11)
-            _pptx_text(slide, "Profiles", 492, 83, 436, 18, 11)
-            for data, notice, x in ((page.layer_plot, page.image_notice, MARGIN),
-                                    (page.profile_plot, page.profile_notice, 492)):
+        if page.layout == "layer":
+            for label, data, notice, top, box_h in (
+                    ("Layer image", page.layer_plot, page.image_notice, IMAGE_TOP, IMAGE_H),
+                    ("Profiles", page.profile_plot, page.profile_notice, PROFILE_TOP, PROFILE_H)):
+                _pptx_text(slide, label, LEFT_X, top - 14, LEFT_W, 16, 11)
                 if data:
                     with Image.open(BytesIO(data)) as image:
-                        ratio = min(436 / image.width, 245 / image.height)
+                        ratio = min(LEFT_W / image.width, box_h / image.height)
                         w, h = image.width * ratio, image.height * ratio
-                    slide.shapes.add_picture(BytesIO(data), Pt(x + (436 - w) / 2), Pt(105 + (245 - h) / 2),
+                    slide.shapes.add_picture(BytesIO(data), Pt(LEFT_X + (LEFT_W - w) / 2), Pt(top + (box_h - h) / 2),
                                              width=Pt(w), height=Pt(h))
                 else:
-                    _pptx_text(slide, notice, x + 15, 210, 400, 55, 12, "637381")
+                    _pptx_text(slide, notice, LEFT_X + 15, top + box_h / 2, 400, 40, 12, "637381")
         _pptx_table(slide, page)
         _pptx_text(slide, "muNEXAFS | STXM–NEXAFS analysis", MARGIN, 518, 500, 14, 8, "637381")
         _pptx_text(slide, f"{index} / {len(pages)}", PAGE_WIDTH - 80, 518, 55, 14, 8, "637381")

@@ -14,8 +14,13 @@ from PySide6.QtWidgets import (
 )
 
 from ..reporting import (
-    _safe_name, export_layer_images, export_pdf, export_pptx, export_spectra_bundle,
+    _safe_name, export_image_set, export_pdf, export_pptx, export_spectra_bundle,
 )
+
+# Per-type raw-image folders (unchecked by default).  Names must match the
+# ``image_sets`` produced by build_report_payload.
+IMAGE_SET_NAMES = ("Transmission", "OD (registered)", "OD (-pre edge)",
+                   "Net absorption", "Peakmap", "PTEE-R2", "PCA-Clustering", "SVD/PCA")
 
 
 class _ReportWorker(QObject):
@@ -57,13 +62,17 @@ class _ReportWorker(QObject):
                     self.payload.get("spectra", {}), energies,
                     self.payload.get("mapping_spectra", {}), folder / "spectra", stem,
                 ),
-                "Images": lambda: export_layer_images(layers, folder / "layers"),
             }
+            image_sets = {s["name"]: s for s in self.payload.get("image_sets", [])}
             paths, failures = [], []
             for name in self.formats:
                 self.progress.emit(f"Exporting {name}…")
                 try:
-                    paths.extend(jobs[name]())
+                    if name in jobs:
+                        paths.extend(jobs[name]())
+                    elif name in image_sets:
+                        paths.extend(export_image_set(image_sets[name], folder / "images"))
+                    # A selected image type with no data for this scan is skipped.
                 except Exception as exc:
                     failures.append(f"{name}: {exc}")
             self.finished.emit({"paths": paths, "failures": failures, "directory": folder})
@@ -121,16 +130,32 @@ class ReportWindow(QMainWindow):
         self.warning_label.setWordWrap(True)
         self.warning_label.setVisible(bool(payload.get("warnings")))
         root.addWidget(self.warning_label)
-        options = QHBoxLayout()
+        options = QVBoxLayout()
+        doc_row = QHBoxLayout()
         self.pptx = QCheckBox("PPTX")
         self.pdf = QCheckBox("PDF")
         self.csv = QCheckBox("CSV: all spectra + separate mapping spectra")
-        self.images = QCheckBox("Layer images folder")
-        self._choices = {"PPTX": self.pptx, "PDF": self.pdf, "CSV": self.csv, "Images": self.images}
+        self._choices = {"PPTX": self.pptx, "PDF": self.pdf, "CSV": self.csv}
         for choice in self._choices.values():
-            choice.setChecked(True)
-            options.addWidget(choice)
-        options.addStretch()
+            choice.setChecked(True)                      # document exports on by default
+            doc_row.addWidget(choice)
+        doc_row.addStretch()
+        options.addLayout(doc_row)
+        # Per-type raw-image folders: unchecked by default; each checked type
+        # writes a folder with all of its images (every frame for stacks).
+        for start in (0, 4):
+            row = QHBoxLayout()
+            if start == 0:
+                row.addWidget(QLabel("Raw image folders:"))
+            else:
+                row.addSpacing(108)
+            for name in IMAGE_SET_NAMES[start:start + 4]:
+                box = QCheckBox(name)
+                box.setChecked(False)
+                self._choices[name] = box
+                row.addWidget(box)
+            row.addStretch()
+            options.addLayout(row)
         root.addLayout(options)
         buttons = QHBoxLayout()
         self.path_label = QLabel(str(self.output_dir))
