@@ -793,6 +793,9 @@ class MainWindow(QMainWindow):
         registered_label = "Registered OD" if self._od_result is not None else "Registered transmission"
         if not self.layer_list.findItems(registered_label, Qt.MatchFlag.MatchExactly):
             self.layer_list.addItem(registered_label)
+        # Move the active layer to the registered layer after registration.
+        registered_row = self.layer_list.findItems(registered_label, Qt.MatchFlag.MatchExactly)[0]
+        self.layer_list.setCurrentItem(registered_row)
         self._persist_scan_session()
         self._show_frame(self._current_frame)
 
