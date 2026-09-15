@@ -148,12 +148,25 @@ def export_image_set(image_set: dict, directory: Path) -> list[Path]:
         stack = np.asarray(data)
         energies = image_set.get("energies")
         energies = np.asarray(energies) if energies is not None else None
+        # One scaling for the whole stack so contrast is identical across every
+        # energy frame (comparable frame to frame).  Use the stack-wide finite
+        # min–max unless explicit levels are supplied.  Per-frame scaling would
+        # both change contrast between frames and blow out low-signal frames
+        # (e.g. OD − pre-edge, where signal is sparse over a near-zero background).
+        if display and display.get("levels") is not None:
+            levels = tuple(display["levels"])
+        else:
+            finite = stack[np.isfinite(stack)]
+            lo = float(finite.min()) if finite.size else 0.0
+            hi = float(finite.max()) if finite.size else 1.0
+            levels = (lo, hi if hi > lo else lo + 1.0)
+        frame_display = {**(display or {}), "levels": levels}
         for i in range(len(stack)):
             suffix = ""
             if energies is not None and i < energies.size and np.isfinite(energies[i]):
                 suffix = f"_{float(energies[i]):.2f}eV"
             path = folder / f"{_safe_name(name)}_{i:03d}{suffix}.png"
-            Image.fromarray(_image_array(stack[i], display)).save(path)
+            Image.fromarray(_image_array(stack[i], frame_display)).save(path)
             outputs.append(path)
     else:
         path = folder / f"{_safe_name(name)}.png"
