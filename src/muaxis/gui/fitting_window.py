@@ -32,6 +32,7 @@ class FittingWindow(QMainWindow):
         self.norm_energy_label=QLabel("Normalize at"); right.addWidget(self.norm_energy_label); self.norm_energy=QComboBox(); self.norm_energy.addItems([f"{e:.4g} eV" for e in self.energies_eV]); self.norm_energy.setCurrentIndex(len(self.energies_eV)-1); self.norm_energy.currentIndexChanged.connect(self._plot_refs); right.addWidget(self.norm_energy)
         self.norm_energy_label.setVisible(False); self.norm_energy.setVisible(False)
         right.addWidget(QLabel("R² floor")); self.floor=QDoubleSpinBox(); self.floor.setRange(-1,1); self.floor.setSingleStep(.01); self.floor.setValue(.9); right.addWidget(self.floor)
+        self.single_phase_check=QCheckBox("Single-phase assignment"); self.single_phase_check.setChecked(False); self.single_phase_check.setToolTip("Assign each pixel to the single highest-R² phase (winner-take-all) instead of a blended mixture."); right.addWidget(self.single_phase_check)
         self.blur_check=QCheckBox("Gaussian blur"); self.blur_check.setChecked(True); right.addWidget(self.blur_check); blur_row=QHBoxLayout(); blur_row.addWidget(QLabel("Radius")); self.blur_radius=QLineEdit("0.7"); self.blur_radius.setMaximumWidth(70); blur_row.addWidget(self.blur_radius); right.addLayout(blur_row)
         self.run=QPushButton("Run"); self.run.clicked.connect(self.run_fit); right.addWidget(self.run); self.save=QPushButton("Save map"); self.save.setEnabled(False); self.save.clicked.connect(self.save_map); right.addWidget(self.save); right.addStretch(1)
         self.plot=pg.PlotWidget(title="Reference profiles (RGBY)"); self.plot.setMinimumSize(0,0); self.plot.setLabel("bottom","Energy",units="eV"); self.plot.setLabel("left","OD"); left.addWidget(self.plot,2)
@@ -116,6 +117,7 @@ class FittingWindow(QMainWindow):
             "input_source": self.input_source,
             "profile_normalization": self.norm.currentText(),
             "r2_floor": self.floor.value(),
+            "single_phase_assignment": self.single_phase_check.isChecked(),
             "gaussian_blur": self.blur_check.isChecked(),
             "gaussian_sigma_pixels": radius if self.blur_check.isChecked() else 0.0,
             "channels": {
@@ -130,7 +132,8 @@ class FittingWindow(QMainWindow):
         if self.norm.currentIndex() == 3:
             parameters["normalization_energy_eV"] = float(self.energies_eV[self._norm_energy_index()])
         self.result = replace(
-            spectral_r2_map(data, self.energies_eV, refs, normalization=norm, r2_floor=self.floor.value()),
+            spectral_r2_map(data, self.energies_eV, refs, normalization=norm, r2_floor=self.floor.value(),
+                            single_phase=self.single_phase_check.isChecked()),
             raw_references=raw_refs, analysis_parameters=parameters,
         )
         self.map.setImage(self.result.rgb_y,autoLevels=False,autoRange=True); self.status.setText("R² RGBY map ready"); self.save.setEnabled(True); self.resultReady.emit(self.result)

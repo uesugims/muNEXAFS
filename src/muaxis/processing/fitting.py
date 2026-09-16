@@ -22,7 +22,7 @@ def _normalize(a: NDArray[np.float64], mode: str) -> NDArray[np.float64]:
     # Area-normalized spectra are useful when absolute OD should be removed.
     return np.divide(a, np.nanmax(np.abs(a), axis=-1, keepdims=True), out=np.zeros_like(a), where=np.nanmax(np.abs(a), axis=-1, keepdims=True) != 0)
 
-def spectral_r2_map(od_stack: NDArray[np.float64], energies_eV: NDArray[np.float64], references: NDArray[np.float64], reference_energies: NDArray[np.float64] | None = None, *, normalization: str = "Min–max", r2_floor: float = 0.9) -> SpectralFitResult:
+def spectral_r2_map(od_stack: NDArray[np.float64], energies_eV: NDArray[np.float64], references: NDArray[np.float64], reference_energies: NDArray[np.float64] | None = None, *, normalization: str = "Min–max", r2_floor: float = 0.9, single_phase: bool = False) -> SpectralFitResult:
     od = np.asarray(od_stack, float); refs = np.asarray(references, float)
     if od.ndim != 3 or refs.ndim != 2 or refs.shape[0] not in (3, 4): raise ValueError("od_stack=(energy,y,x), references=(3 or 4,energy)")
     e = np.asarray(energies_eV, float)
@@ -49,6 +49,18 @@ def spectral_r2_map(od_stack: NDArray[np.float64], energies_eV: NDArray[np.float
     scores = scores.reshape((refs.shape[0],) + od.shape[1:])
     weights = np.clip((scores-r2_floor) / max(1e-12, 1-r2_floor), 0, 1)
     weights[~np.isfinite(weights)] = 0.0
+    if single_phase:
+        # Single-phase assignment (winner-take-all): each pixel is assigned to
+        # the reference with the highest R², keeping only that channel's weight
+        # and zeroing the others, so the map shows one phase per pixel rather
+        # than a blended mixture.  A pixel whose best match is below the floor
+        # has zero weight everywhere and stays unassigned.
+        finite_scores = np.where(np.isfinite(scores), scores, -np.inf)
+        winner = np.argmax(finite_scores, axis=0)
+        yy, xx = np.indices(winner.shape)
+        kept = np.zeros_like(weights)
+        kept[winner, yy, xx] = weights[winner, yy, xx]
+        weights = kept
     if refs.shape[0] == 3: weights = np.concatenate([weights, np.zeros((1,)+weights.shape[1:])])
     rgb_y = np.empty((*od.shape[1:], 4), np.float32); rgb_y[..., 0] = np.clip(weights[0] + weights[3], 0, 1); rgb_y[..., 1] = np.clip(weights[1] + weights[3], 0, 1); rgb_y[..., 2] = weights[2]; rgb_y[..., 3] = np.nanmax(weights, axis=0)
     effective = np.where(active_refs[:, None], r, np.nan)
