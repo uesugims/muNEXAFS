@@ -20,3 +20,6 @@ dist/
 
 # Generated report folders
 *_report_*/
+
+# Benchmark run outputs (regenerable via benchmark.py)
+benchmarks/ptee_vs_svd/outputs/

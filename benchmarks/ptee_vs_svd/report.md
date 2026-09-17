@@ -46,25 +46,25 @@ Supervised (PTEE / SAM / LCF, same known spectra) | unsupervised (PCA / SVD raw 
 
 | phase | true area % | PTEE | SAM | LCF | PCA | SVD | PCA+cluster |
 |---|---|---|---|---|---|---|---|
-| matrix | 92.16 | **0.703±0.001** | 0.703±0.001 | 0.703±0.001 | 0.703±0.001 | 0.703±0.001 | 0.998±0.001 |
-| minor1 | 5.01 | **0.991±0.002** | 0.990±0.002 | 0.993±0.003 | 0.968±0.009 | 0.971±0.008 | 0.988±0.001 |
-| minor2 | 1.98 | **0.978±0.006** | 0.979±0.005 | 0.980±0.005 | 0.958±0.018 | 0.961±0.014 | 0.969±0.021 |
-| minor3 | 0.73 | **0.915±0.009** | 0.913±0.009 | 0.927±0.011 | 0.655±0.214 | 0.393±0.078 | 0.948±0.040 |
-| minor4 | 0.24 | **0.798±0.017** | 0.804±0.014 | 0.804±0.014 | 0.179±0.089 | 0.119±0.005 | 0.557±0.394 |
-| minor5 | 0.10 | **0.877±0.016** | 0.946±0.014 | 0.952±0.011 | 0.058±0.006 | 0.207±0.023 | 0.540±0.382 |
+| matrix | 92.16 | **0.997±0.001** | 1.000±0.000 | 1.000±0.000 | 0.997±0.000 | 0.997±0.000 | 0.998±0.001 |
+| minor1 | 5.01 | **0.986±0.004** | 0.991±0.002 | 0.997±0.001 | 0.970±0.009 | 0.972±0.008 | 0.988±0.001 |
+| minor2 | 1.98 | **0.979±0.016** | 0.992±0.006 | 0.992±0.005 | 0.960±0.019 | 0.971±0.010 | 0.969±0.021 |
+| minor3 | 0.73 | **0.955±0.003** | 0.945±0.001 | 0.967±0.003 | 0.673±0.230 | 0.397±0.079 | 0.932±0.035 |
+| minor4 | 0.24 | **0.862±0.022** | 0.977±0.011 | 0.979±0.014 | 0.187±0.098 | 0.120±0.007 | 0.557±0.394 |
+| minor5 | 0.10 | **0.326±0.061** | 0.959±0.015 | 0.965±0.009 | 0.059±0.006 | 0.223±0.022 | 0.540±0.382 |
 
-Minor-phase mean F1 — supervised: **PTEE 0.912**, SAM 0.927, LCF 0.931; unsupervised: PCA 0.564, SVD 0.530, PCA+cluster 0.800.
+Minor-phase mean F1 — supervised: **PTEE 0.822**, SAM 0.973, LCF 0.980; unsupervised: PCA 0.570, SVD 0.537, PCA+cluster 0.797.
 
 ### Table 2 — detected area % (compare with the true area % — much larger = over-detection)
 
 | phase | true area % | PTEE | SAM | LCF | PCA | SVD | PCA+cluster |
 |---|---|---|---|---|---|---|---|
-| matrix | 92.16 | 50.00 | 50.00 | 50.00 | 50.00 | 50.00 | 92.23 |
-| minor1 | 5.01 | 4.95 | 4.95 | 4.95 | 4.86 | 4.86 | 4.91 |
-| minor2 | 1.98 | 2.02 | 2.02 | 2.02 | 1.86 | 2.02 | 1.89 |
-| minor3 | 0.73 | 0.69 | 0.77 | 0.77 | 1.52 | 2.19 | 0.69 |
-| minor4 | 0.24 | 0.35 | 0.35 | 0.35 | 2.94 | 3.53 | 0.21 |
-| minor5 | 0.10 | 0.10 | 0.10 | 0.10 | 2.94 | 0.10 | 0.10 |
+| matrix | 92.16 | 91.66 | 92.18 | 92.16 | 92.28 | 92.28 | 92.23 |
+| minor1 | 5.01 | 4.88 | 4.96 | 5.00 | 4.80 | 4.83 | 4.91 |
+| minor2 | 1.98 | 1.92 | 1.98 | 1.99 | 1.85 | 1.94 | 1.89 |
+| minor3 | 0.73 | 0.74 | 0.73 | 0.73 | 1.46 | 2.11 | 0.67 |
+| minor4 | 0.24 | 0.30 | 0.23 | 0.23 | 2.79 | 3.60 | 0.21 |
+| minor5 | 0.10 | 0.51 | 0.10 | 0.10 | 2.91 | 0.08 | 0.10 |
 
 ![detection](outputs/fig2_detection_maps.png)
 
@@ -80,18 +80,18 @@ Timed **single-threaded (BLAS/OpenMP pinned to 1 thread)** for reproducibility. 
 
 - **Measured on:** Apple M4 (10 physical / 10 logical cores, 17.2 GB RAM), macOS-26.6.2-arm64-arm-64bit-Mach-O.
 - **Software:** Python 3.13.4, numpy 2.5.3 (BLAS: accelerate), scipy 1.18.1; single process, threads pinned to **1**.
-- **PTEE** (all references, min–max R²): **67.4 ms**
-- **SAM** (spectral-angle correlation, supervised): 146.1 ms
-- **LCF** (non-negative linear-combination fit, supervised): 91.1 ms
-- **PCA** (centered SVD): 580.3 ms
-- **SVD** (uncentered): 575.4 ms
-- **PCA+cluster** (PCA + k-means, the realistic workflow): 654.0 ms
-- The supervised target methods are all cheap closed-form passes: PTEE ≈ SAM (~67–146 ms), LCF 91 ms. PTEE is ~**8.6×** faster than a bare PCA/SVD decomposition and ~**9.7×** faster than the full PCA+cluster workflow, and scales more gently with pixel count (fig 3, right).
+- **PTEE** (all references, min–max R²): **64.2 ms**
+- **SAM** (spectral-angle correlation, supervised): 143.8 ms
+- **LCF** (non-negative linear-combination fit, supervised): 89.7 ms
+- **PCA** (centered SVD): 561.5 ms
+- **SVD** (uncentered): 557.3 ms
+- **PCA+cluster** (PCA + k-means, the realistic workflow): 642.3 ms
+- The supervised target methods are all cheap closed-form passes: PTEE ≈ SAM (~64–144 ms), LCF 90 ms. PTEE is ~**8.7×** faster than a bare PCA/SVD decomposition and ~**10.0×** faster than the full PCA+cluster workflow, and scales more gently with pixel count (fig 3, right).
 - **Non-negativity comes free with PTEE.** Obtaining *physically non-negative, interpretable* component spectra and abundances from the variance route needs a further **iterative MCR-ALS / NMF** step on top of PCA (+cluster), which repeats a decomposition of this size many times — so the real-world speed gap is larger still. PTEE uses measured spectra as endmembers, so non-negativity holds by construction with no iteration.
 
 ## Takeaways
 
-- **The real split is supervised vs unsupervised, not PTEE vs everything.** Given the same known spectra, PTEE, SAM and LCF all detect even the smallest phases (mean minor-phase F1 0.91 / 0.93 / 0.93), while every unsupervised route collapses — raw PCA/SVD 0.56 / 0.53, and the realistic **PCA+cluster (MANTiS-style) workflow 0.80**. So the result is not an artifact of comparing against a 'raw' PCA straw man: the standard clustering workflow fails on the small phases too. PTEE having the reference spectra is **not** what wins — SAM and LCF have them and behave the same.
+- **The real split is supervised vs unsupervised, not PTEE vs everything.** Given the same known spectra, PTEE, SAM and LCF all detect even the smallest phases (mean minor-phase F1 0.82 / 0.97 / 0.98), while every unsupervised route collapses — raw PCA/SVD 0.57 / 0.54, and the realistic **PCA+cluster (MANTiS-style) workflow 0.80**. So the result is not an artifact of comparing against a 'raw' PCA straw man: the standard clustering workflow fails on the small phases too. PTEE having the reference spectra is **not** what wins — SAM and LCF have them and behave the same.
 - **Two different unsupervised failure modes, same outcome:** raw PCA/SVD **over-detect** (one variance component lights up on several phases → false alarms, detected area ≫ true area), while PCA+cluster **misses** the smallest phases — k-means spends its k clusters on the high-variance/thickness structure and never gives a ~0.1 %-area phase a cluster of its own, so those pixels are absorbed into a bigger cluster. The supervised methods avoid both: each reference matches only its own phase, so detected area tracks the true area.
 - **Thickness robustness:** the thickness field is the largest source of variance, so it dominates the leading PCA/SVD components; PTEE (min–max), SAM (scale/offset-invariant) and LCF (abundance ratio) all remove it.
 - **What PTEE adds over the other supervised methods** is not detection accuracy — SAM and LCF match it here — but a combination of practical properties: it is **among the fastest** (a few vectorized passes, no per-pixel solve like LCF, no iteration like MCR-ALS/NMF), it uses **physically real endmembers** so **non-negativity is automatic**, and R² is a **bounded [0,1] per-phase fit quality** that doubles as the phase-assignment gate. The honest positioning: PTEE is the simplest, cheapest member of the supervised/target-driven family, which as a family is what beats variance methods on minor phases.

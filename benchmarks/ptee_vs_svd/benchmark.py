@@ -125,6 +125,77 @@ def ptee_r2_maps(od, refs, normalization="Min–max"):
     return scores.reshape(len(refs), y, x)
 
 
+# --------------------------------------------------------------------------- #
+# Fully unsupervised PTEE endmember extraction from the image alone            #
+# (peak map + peak-map clustering; no reference spectra, no ground-truth masks) #
+# --------------------------------------------------------------------------- #
+def _pre_edge_subtract(od, n_pre=3):
+    return np.clip(od - np.nanmean(od[:n_pre], axis=0)[None], 0.0, None)
+
+
+def _peak_map(odp):
+    # A light centred 3-tap running mean along energy removes per-pixel argmax
+    # jitter from photon noise (essential for the tiniest phase); done by hand it
+    # is far cheaper than scipy's filters.
+    sm = odp.copy()
+    sm[1:-1] = (odp[:-2] + odp[1:-1] + odp[2:]) / 3.0
+    return np.argmax(sm, axis=0)
+
+
+def ptee_extract(od, energies, n_phases, *, min_mode_frac=5e-4, peak_window=(284.0, 291.5)):
+    """Extract (matrix + minor) endmember spectra from the OD cube alone.
+
+    The peak map is built from the pre-edge-subtracted cube; its populated
+    energies within the π* window are the candidate phase peaks (post-edge σ*
+    energies are excluded, where photon noise makes the per-pixel maximum
+    wander).  The strongest mode is the matrix; each remaining candidate peak
+    defines a cluster of pixels whose maximum OD sits there — where the phase
+    dominates it is close to pure — whose mean is the extracted endmember.
+    Returns (refs (n, E), peak_energies (n,)), matrix first.
+    """
+    odp = _pre_edge_subtract(od)
+    E = od.shape[0]
+    pk = _peak_map(odp)
+    counts = np.bincount(pk.ravel(), minlength=E).astype(float)
+    npix = pk.size
+    in_win = (energies >= peak_window[0]) & (energies <= peak_window[1])
+    cand = [i for i in range(E)
+            if in_win[i] and counts[i] >= max(3.0, min_mode_frac * npix)
+            and counts[i] >= counts[max(0, i - 1)] and counts[i] >= counts[min(E - 1, i + 1)]]
+    cand.sort(key=lambda i: counts[i], reverse=True)
+    if not cand:
+        cand = [int(np.argmax(counts))]
+    matrix_e, minor_es = cand[0], cand[1:n_phases]
+    flat = od.reshape(E, -1); pk_flat = pk.ravel(); finite = np.isfinite(flat).all(axis=0)
+    refs, peak_es, claimed = [], [], np.zeros(npix, bool)
+    for te in minor_es:
+        m = finite & (np.abs(pk_flat - te) <= 1)
+        if m.sum() < 5:
+            continue
+        refs.append(np.nanmean(flat[:, m], axis=1)); peak_es.append(energies[te]); claimed |= m
+    mat = ~claimed & finite
+    refs = [np.nanmean(flat[:, mat if mat.any() else finite], axis=1)] + refs
+    peak_es = [energies[matrix_e]] + peak_es
+    return np.asarray(refs), np.asarray(peak_es)
+
+
+def extracted_refs_by_phase(ph):
+    """Run the unsupervised extraction and align each extracted endmember to the
+    phase whose peak energy is nearest (evaluation labelling only).  Returns a
+    (P, E) array with a NaN row for any phase that produced no distinct peak-map
+    mode (so its PTEE detection map is empty = missed)."""
+    ext, peaks = ptee_extract(ph.od, ph.energies, len(ph.names))
+    true_peaks = ph.energies[np.argmax(ph.endmembers, axis=1)]
+    P, E = len(ph.names), ph.od.shape[0]
+    aligned = np.full((P, E), np.nan); used = set()
+    for i, pe in enumerate(peaks):
+        d = [abs(pe - true_peaks[p]) if p not in used else np.inf for p in range(P)]
+        p = int(np.argmin(d))
+        if np.isfinite(d[p]):
+            aligned[p] = ext[i]; used.add(p)
+    return aligned
+
+
 def sam_corr_maps(od, refs):
     """Spectral Angle Mapper (continuum-insensitive variant): correlation between
     each pixel spectrum and each reference = cosine of the spectral angle after
@@ -199,33 +270,56 @@ def _kmeans_labels(feats, k_values=CLUSTER_K):
 
 def kmeans_detection(feats, masks):
     """Realistic variance-based phase mapper (Lerotic 2004 / MANTiS): k-means
-    clustering of the PCA scores, then **label each cluster by its dominant
-    (majority) ground-truth phase** — the standard way an analyst turns clusters
-    into a phase map.  A phase's detection map is the union of the clusters
-    labelled as it, so a tiny phase that gets no cluster of its own is simply
-    *missed* (empty map) rather than mapped onto a spurious large cluster.  A few
-    ``k`` are scanned and the best per phase is kept (an analyst tries several k).
-    Returns a binary detection map per phase."""
+    clustering of the PCA scores giving a single **exclusive** partition, then
+    **label each cluster by its dominant (majority) ground-truth phase** — the
+    standard way an analyst turns clusters into a phase map.  The number of
+    clusters ``k`` is chosen from CLUSTER_K to maximise the mean minor-phase F1
+    (an analyst keeping the best of a few k), and the *same* k is used for every
+    phase — no per-phase cherry-picking.  A tiny phase that gets no cluster of
+    its own is simply missed.  Returns a binary detection map per phase."""
     labelings = _kmeans_labels(feats)
     shape = masks.shape[1:]
     P = len(masks)
     flat = masks.reshape(P, -1)
-    best_f1 = [-1.0] * P
-    maps = [np.zeros(shape) for _ in range(P)]
+    best_score, best_maps = -1.0, [np.zeros(shape) for _ in range(P)]
     for lab in labelings:
-        pred_p = [np.zeros(lab.shape, bool) for _ in range(P)]
-        for c in np.unique(lab):                       # label each cluster by majority phase
+        predlabel = np.full(lab.shape, -1, int)        # exclusive: one phase per pixel
+        for c in np.unique(lab):
             sel = lab == c
             dom = int(np.argmax([int((sel & flat[p]).sum()) for p in range(P)]))
-            pred_p[dom] |= sel
+            predlabel[sel] = dom
+        maps, f1s = [], []
         for p in range(P):
-            pred, m = pred_p[p], flat[p]
-            tp = int((pred & m).sum()); fp = int((pred & ~m).sum()); fn = int((~pred & m).sum())
-            f1 = 2 * tp / (2 * tp + fp + fn) if (2 * tp + fp + fn) else 0.0
-            if f1 > best_f1[p]:
-                best_f1[p] = f1
-                maps[p] = pred.reshape(shape).astype(float)
-    return maps
+            pred = predlabel == p
+            maps.append(pred.reshape(shape).astype(float))
+            if p >= 1:
+                m = flat[p]
+                tp = int((pred & m).sum()); fp = int((pred & ~m).sum()); fn = int((~pred & m).sum())
+                f1s.append(2 * tp / (2 * tp + fp + fn) if (2 * tp + fp + fn) else 0.0)
+        score = float(np.mean(f1s)) if f1s else 0.0
+        if score > best_score:
+            best_score, best_maps = score, maps
+    return best_maps
+
+
+def variance_diagnostics(ph, ncomp=10):
+    """Substantiate *why* the variance workflow misses tiny phases: the fraction
+    of variance in each leading PC, whether the thickness field aligns with PC1,
+    and how strongly each minor phase is represented across the first ncomp PCs.
+    Shows the failure is low variance of small-area phases — not, as one might
+    assume, a thickness-dominated first component."""
+    r = decompose_stack(ph.od, ncomp, "PCA")
+    ev = np.asarray(r.explained_variance, float); frac = ev / ev.sum()
+    sc = r.scores.reshape(ph.od.shape[1], ph.od.shape[2], -1)
+    th = ph.thickness.ravel()
+    minor_repr = []
+    for p in range(1, len(ph.names)):
+        m = ph.masks[p].ravel().astype(float)
+        best = max(abs(np.corrcoef(sc[..., k].ravel(), m)[0, 1]) for k in range(sc.shape[-1]))
+        minor_repr.append([ph.names[p], round(float(best), 3)])
+    return dict(pc_variance_fraction=[round(float(x), 4) for x in frac[:6]],
+                pc1_thickness_abscorr=round(float(abs(np.corrcoef(sc[..., 0].ravel(), th)[0, 1])), 3),
+                minor_pc_representation=minor_repr)
 
 
 def _validate_against_gui(od, refs):
@@ -240,17 +334,34 @@ def _validate_against_gui(od, refs):
 # metrics                                                                      #
 # --------------------------------------------------------------------------- #
 def best_threshold(score, mask):
-    """Threshold that maximizes F1 over finite pixels -> (f1, threshold)."""
+    """Threshold that maximizes F1 over finite pixels -> (f1, threshold).
+
+    Every distinct score boundary is evaluated (not a fixed quantile grid), so
+    the search can select any fraction of the image from 0 % up to 100 %.  A
+    quantile grid starting at 0.5 would cap the predicted set at ~50 % of the
+    pixels and therefore cap the F1 of any phase larger than that (e.g. the
+    dominant matrix) regardless of how separable the scores actually are.
+
+    For predicting the top-k highest-scoring pixels, TP = (positives among the
+    top k), FP = k - TP and FN = P - TP, so 2*TP + FP + FN = k + P and
+    F1 = 2*TP / (k + P).  Maximising this over k (restricted to positions where
+    the score changes, i.e. real thresholds) is exact and O(N log N).
+    """
     s = np.asarray(score, float).ravel(); m = np.asarray(mask, bool).ravel()
     ok = np.isfinite(s); sv, mv = s[ok], m[ok]
-    best = (0.0, np.nanmin(sv) if sv.size else 0.0)
-    for t in np.quantile(sv, np.linspace(0.5, 0.999, 200)):
-        pred = sv >= t
-        tp = int((pred & mv).sum()); fp = int((pred & ~mv).sum()); fn = int((~pred & mv).sum())
-        f1 = 2 * tp / (2 * tp + fp + fn) if (2 * tp + fp + fn) else 0.0
-        if f1 > best[0]:
-            best = (f1, float(t))
-    return best
+    P = int(mv.sum())
+    if sv.size == 0 or P == 0:
+        return (0.0, float(np.nanmin(sv)) if sv.size else 0.0)
+    order = np.argsort(-sv, kind="mergesort")          # scores, high -> low
+    s_sorted = sv[order]; m_sorted = mv[order]
+    tp_cum = np.cumsum(m_sorted)                        # TP when predicting the top k
+    k = np.arange(1, sv.size + 1)
+    f1 = 2 * tp_cum / (k + P)
+    # A cut after position k is a real threshold only where the score changes
+    # (or at the very end = predict everything); ties cannot be split.
+    valid = np.ones(sv.size, bool); valid[:-1] = s_sorted[:-1] != s_sorted[1:]
+    bi = int(np.argmax(np.where(valid, f1, -1.0)))
+    return (float(f1[bi]), float(s_sorted[bi]))
 
 
 def score_metrics(score, mask, binary=False):
@@ -355,6 +466,15 @@ def detect(ph, refs, ncomp, size):
     realistic PCA→k-means cluster workflow (oracle best cluster per phase).
     """
     sup = supervised_maps(ph.od, refs)
+    # PTEE is evaluated as the FULL pipeline: extract endmembers from the noisy
+    # image (no known spectra, no masks), then R² classify with them.
+    # PTEE detection is an EXCLUSIVE assignment: each pixel goes to the phase of
+    # highest R² (argmax, no threshold and no ground truth), exactly the
+    # single-phase assignment described for the method.  Each phase's map is its
+    # membership in that partition.
+    _ptee_scores = ptee_r2_maps(ph.od, extracted_refs_by_phase(ph), "Min–max")
+    _ptee_label = np.argmax(np.where(np.isfinite(_ptee_scores), _ptee_scores, -np.inf), axis=0)
+    sup["ptee"] = np.stack([(_ptee_label == p).astype(float) for p in range(len(ph.names))])
     pca = decompose_stack(ph.od, ncomp, "PCA")
     svd = decompose_stack(ph.od, ncomp, "SVD (uncentered)")
     pca_s = pca.scores.reshape(size, size, ncomp)
@@ -372,10 +492,11 @@ def detect(ph, refs, ncomp, size):
         row = dict(phase=name, area_pct=100 * float(ph.area_fraction[p]),
                    pca_comp=pk, svd_comp=sk)
         for m in METHODS:
-            f1, area, rec, _ = score_metrics(phase_maps[m], ph.masks[p], binary=(m == "cluster"))
+            f1, area, rec, prec = score_metrics(phase_maps[m], ph.masks[p], binary=(m in ("ptee", "cluster")))
             row[f"{m}_f1"] = f1
             row[f"{m}_area"] = 100 * area
             row[f"{m}_recall"] = 100 * rec
+            row[f"{m}_precision"] = 100 * prec
             maps[m].append(phase_maps[m])
         rows.append(row)
     return rows, maps
@@ -417,7 +538,7 @@ def main() -> int:
     ph_fig, maps0 = rep["ph"], rep["maps"]
 
     # Average detection over the realizations (mean +/- std).
-    metric_keys = tuple(f"{m}_{q}" for m in METHODS for q in ("f1", "area", "recall"))
+    metric_keys = tuple(f"{m}_{q}" for m in METHODS for q in ("f1", "area", "recall", "precision"))
     stacks = {k: [[] for _ in range(P)] for k in metric_keys + ("area_pct",)}
     for entry in per_seed:
         for p in range(P):
@@ -465,7 +586,8 @@ def main() -> int:
                                energies=int(ph.energies.size), phases=ph.names,
                                phases_str=", ".join(ph.names), n_components=ncomp,
                                seedref=bool(args.seedref), r2_fidelity_vs_gui=fidelity),
-                   detection=rows, speed=speed, scaling=scaling, environment=system_info())
+                   detection=rows, speed=speed, scaling=scaling,
+                   variance_diagnostics=variance_diagnostics(ph), environment=system_info())
     (OUT / "metrics.json").write_text(json.dumps(metrics, indent=2))
     _write_csv(OUT / "metrics.csv", rows)
 
@@ -483,7 +605,7 @@ def main() -> int:
 def _write_csv(path, rows):
     cols = ["phase", "area_pct"]
     for m in METHODS:
-        cols += [f"{m}_f1", f"{m}_area", f"{m}_recall"]
+        cols += [f"{m}_f1", f"{m}_area", f"{m}_recall", f"{m}_precision"]
     cols += ["pca_comp", "svd_comp"]
     lines = [",".join(cols)]
     for r in rows:
@@ -530,7 +652,7 @@ def _figures(ph, maps, rows, speed, scaling):
         for row, m in enumerate(METHODS):
             mp = maps[m][p]
             if mp is not None:
-                rgb, f = outcome_rgb(mp, ph.masks[p], binary=(m == "cluster"))
+                rgb, f = outcome_rgb(mp, ph.masks[p], binary=(m in ("ptee", "cluster")))
             else:
                 rgb, f = np.zeros((*ph.masks.shape[1:], 3)), 0.0
             ax[row, j].imshow(rgb)
