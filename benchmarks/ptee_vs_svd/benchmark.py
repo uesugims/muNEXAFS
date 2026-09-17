@@ -302,6 +302,20 @@ def kmeans_detection(feats, masks):
     return best_maps
 
 
+def kmeans_partition(feats, masks, k):
+    """Exclusive PCA + k-means phase map for a single, fixed cluster count k:
+    each pixel goes to one cluster, each cluster is labelled by its majority
+    phase, and every phase's binary membership map is returned."""
+    lab = _kmeans_labels(feats, (k,))[0]
+    shape = masks.shape[1:]; P = len(masks); flat = masks.reshape(P, -1)
+    predlabel = np.full(lab.shape, -1, int)
+    for c in np.unique(lab):
+        sel = lab == c
+        dom = int(np.argmax([int((sel & flat[p]).sum()) for p in range(P)]))
+        predlabel[sel] = dom
+    return [(predlabel == p).reshape(shape).astype(float) for p in range(P)]
+
+
 def variance_diagnostics(ph, ncomp=10):
     """Substantiate *why* the variance workflow misses tiny phases: the fraction
     of variance in each leading PC, whether the thickness field aligns with PC1,
@@ -455,6 +469,12 @@ METHODS = ("ptee", "sam", "lcf", "pca", "svd", "cluster")
 SUPERVISED = ("ptee", "sam", "lcf")
 METHOD_LABEL = dict(ptee="PTEE", sam="SAM", lcf="LCF", pca="PCA", svd="SVD",
                     cluster="PCA+cluster")
+# PCA+cluster reported at each cluster count k separately (both are shown, rather
+# than keeping the best), so the reader sees the k-sensitivity directly.
+CLUSTER_METHODS = tuple(f"cluster{k}" for k in CLUSTER_K)     # ("cluster6", "cluster12")
+METHODS_EVAL = METHODS + CLUSTER_METHODS
+for _k in CLUSTER_K:
+    METHOD_LABEL[f"cluster{_k}"] = f"PCA k={_k}"
 N_CLUSTER_COMP = 10          # PCA components fed to k-means (generous to clustering)
 
 
@@ -482,17 +502,21 @@ def detect(ph, refs, ncomp, size):
     nclust = min(N_CLUSTER_COMP, ph.od.shape[0])
     cluster_feats = decompose_stack(ph.od, nclust, "PCA").scores   # (npix, nclust)
     cluster_maps = kmeans_detection(cluster_feats, ph.masks)
+    cluster_k_maps = {k: kmeans_partition(cluster_feats, ph.masks, k) for k in CLUSTER_K}
     rows = []
-    maps = {m: [] for m in METHODS}
+    maps = {m: [] for m in METHODS_EVAL}
     for p, name in enumerate(ph.names):
         pk, pmap = pca_detection(pca_s, ph.masks[p])
         sk, smap = pca_detection(svd_s, ph.masks[p])
         phase_maps = dict(ptee=sup["ptee"][p], sam=sup["sam"][p], lcf=sup["lcf"][p],
                           pca=pmap, svd=smap, cluster=cluster_maps[p])
+        for k in CLUSTER_K:
+            phase_maps[f"cluster{k}"] = cluster_k_maps[k][p]
         row = dict(phase=name, area_pct=100 * float(ph.area_fraction[p]),
                    pca_comp=pk, svd_comp=sk)
-        for m in METHODS:
-            f1, area, rec, prec = score_metrics(phase_maps[m], ph.masks[p], binary=(m in ("ptee", "cluster")))
+        for m in METHODS_EVAL:
+            f1, area, rec, prec = score_metrics(phase_maps[m], ph.masks[p],
+                                                binary=(m == "ptee" or m.startswith("cluster")))
             row[f"{m}_f1"] = f1
             row[f"{m}_area"] = 100 * area
             row[f"{m}_recall"] = 100 * rec
@@ -538,7 +562,7 @@ def main() -> int:
     ph_fig, maps0 = rep["ph"], rep["maps"]
 
     # Average detection over the realizations (mean +/- std).
-    metric_keys = tuple(f"{m}_{q}" for m in METHODS for q in ("f1", "area", "recall", "precision"))
+    metric_keys = tuple(f"{m}_{q}" for m in METHODS_EVAL for q in ("f1", "area", "recall", "precision"))
     stacks = {k: [[] for _ in range(P)] for k in metric_keys + ("area_pct",)}
     for entry in per_seed:
         for p in range(P):
@@ -754,61 +778,32 @@ def _paper_figures(ph, maps, rows, speed, scaling):
     fig.subplots_adjust(left=0.035, right=0.99, top=0.88, bottom=0.07)
     fig.savefig(OUT / "paper_fig_detection.png", dpi=150); plt.close(fig)
 
-    # Paper Fig B: F1 vs area, detected vs true area, speed scaling.
+    # Paper Fig (summary): (A) F1 vs area for PTEE and PCA+cluster at k = 6 and
+    # k = 12 (both shown), and (B) speed scaling.  The failure-mode panel is
+    # dropped: it added little to the discussion.
     minor_rows = [r for r in rows if r["phase"] != "matrix"]
     order = np.argsort([r["area_pct"] for r in minor_rows])
     xs = [minor_rows[i]["area_pct"] for i in order]
-    fig, ax = plt.subplots(1, 3, figsize=(14.5, 4.4))
-    for mth, mk in (("ptee", "o-"), ("cluster", "P--")):
+    fig, ax = plt.subplots(1, 2, figsize=(10.5, 4.4))
+    series = [("ptee", "o-", colors["ptee"], "PTEE-R2"),
+              ("cluster6", "P--", "#9467bd", "PCA + clustering (k = 6)"),
+              ("cluster12", "s:", "#c49be0", "PCA + clustering (k = 12)")]
+    for mth, mk, col, lab in series:
         ys = [minor_rows[i][f"{mth}_f1"] for i in order]
         es = [minor_rows[i].get(f"{mth}_f1_std", 0.0) for i in order]
-        ax[0].errorbar(xs, ys, yerr=es, fmt=mk, color=colors[mth], capsize=3, label=labels[mth])
+        ax[0].errorbar(xs, ys, yerr=es, fmt=mk, color=col, capsize=3, label=lab)
     ax[0].set_xscale("log"); ax[0].invert_xaxis()
     ax[0].set_xlabel("Phase area fraction (%)"); ax[0].set_ylabel("Detection F1")
-    ax[0].set_title("Minor-phase detection F1 vs area"); ax[0].set_ylim(-0.02, 1.02)
-    ax[0].legend(fontsize=9); ax[0].grid(alpha=0.3)
-    # Failure-mode panel: over-detection (false positives) vs under-detection
-    # (missed) shown SEPARATELY, so they cannot cancel the way detected-minus-
-    # true area does.  Red bar up = FP, blue bar down = FN, as % of phase area;
-    # same colour semantics as the detection-outcome maps.
-    c_fp, c_fn = (0.90, 0.15, 0.15), (0.20, 0.45, 1.00)
-    minors_idx = list(range(1, P))
-    order2 = sorted(minors_idx, key=lambda p: -rows[p]["area_pct"])  # large -> small
-    pos, fp_vals, fn_vals, ticklab, edges, centers = [], [], [], [], [], []
-    x = 0.0
-    for p in order2:
-        grp = []
-        for mth in PAPER_METHODS:
-            true = rows[p]["area_pct"]; det = rows[p][f"{mth}_area"]; rec = rows[p][f"{mth}_recall"] / 100.0
-            tp = rec * true; fp = max(det - tp, 0.0); fn = max(true - tp, 0.0)
-            pos.append(x); grp.append(x)
-            fp_vals.append(100 * fp / true if true else 0.0)
-            fn_vals.append(-100 * fn / true if true else 0.0)
-            ticklab.append("PTEE" if mth == "ptee" else "clust")
-            edges.append("#1f77b4" if mth == "ptee" else "#9467bd")
-            x += 1.0
-        centers.append((sum(grp) / len(grp), rows[p]["phase"], rows[p]["area_pct"]))
-        x += 0.9
-    ax[1].bar(pos, fp_vals, width=0.9, color=c_fp, edgecolor=edges, linewidth=1.8,
-              label="over-detection (false positives)")
-    ax[1].bar(pos, fn_vals, width=0.9, color=c_fn, edgecolor=edges, linewidth=1.8,
-              label="under-detection (missed)")
-    ax[1].axhline(0, color="k", lw=0.8)
-    ax[1].set_xticks(pos); ax[1].set_xticklabels(ticklab, fontsize=7)
-    tr = ax[1].get_xaxis_transform()
-    for xc, name, true in centers:                       # phase label centered under each pair
-        ax[1].text(xc, -0.13, f"{name}\n{true:.2f}%", transform=tr, ha="center", va="top", fontsize=8)
-    ax[1].set_ylabel("Error (% of phase area)")
-    ax[1].set_title("Failure mode: over- vs under-detection\n(bar outline: blue = PTEE, purple = PCA+clustering)")
-    ax[1].legend(fontsize=8, loc="lower left"); ax[1].grid(alpha=0.3, axis="y")
+    ax[0].set_title("(A) Minor-phase detection F1 vs area"); ax[0].set_ylim(-0.02, 1.02)
+    ax[0].legend(fontsize=8); ax[0].grid(alpha=0.3)
     px = [s["pixels"] for s in scaling]
-    ax[2].plot(px, [s["ptee_s"] * 1e3 for s in scaling], "o-", color=colors["ptee"], label="PTEE")
-    ax[2].plot(px, [s["cluster_s"] * 1e3 for s in scaling], "P--", color=colors["cluster"], label="PCA + clustering")
+    ax[1].plot(px, [s["ptee_s"] * 1e3 for s in scaling], "o-", color=colors["ptee"], label="PTEE")
+    ax[1].plot(px, [s["cluster_s"] * 1e3 for s in scaling], "P--", color=colors["cluster"], label="PCA + clustering")
     if "pca_s" in scaling[0]:
-        ax[2].plot(px, [s["pca_s"] * 1e3 for s in scaling], "s:", color="#999999", label="PCA/SVD (reference)")
-    ax[2].set_xlabel("Pixels"); ax[2].set_ylabel("Time (ms)"); ax[2].set_title("Speed scaling")
-    ax[2].legend(fontsize=8); ax[2].grid(alpha=0.3)
-    fig.tight_layout(rect=(0, 0.08, 1, 1)); fig.savefig(OUT / "paper_fig_summary.png", dpi=150); plt.close(fig)
+        ax[1].plot(px, [s["pca_s"] * 1e3 for s in scaling], "s:", color="#999999", label="PCA/SVD (reference)")
+    ax[1].set_xlabel("Pixels"); ax[1].set_ylabel("Time (ms)"); ax[1].set_title("(B) Speed scaling")
+    ax[1].legend(fontsize=8); ax[1].grid(alpha=0.3)
+    fig.tight_layout(); fig.savefig(OUT / "paper_fig_summary.png", dpi=150); plt.close(fig)
 
 
 def _report(m):

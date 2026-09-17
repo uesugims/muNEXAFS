@@ -80,13 +80,13 @@ Timed **single-threaded (BLAS/OpenMP pinned to 1 thread)** for reproducibility. 
 
 - **Measured on:** Apple M4 (10 physical / 10 logical cores, 17.2 GB RAM), macOS-26.6.2-arm64-arm-64bit-Mach-O.
 - **Software:** Python 3.13.4, numpy 2.5.3 (BLAS: accelerate), scipy 1.18.1; single process, threads pinned to **1**.
-- **PTEE** (all references, min–max R²): **64.2 ms**
-- **SAM** (spectral-angle correlation, supervised): 143.8 ms
-- **LCF** (non-negative linear-combination fit, supervised): 89.7 ms
-- **PCA** (centered SVD): 561.5 ms
-- **SVD** (uncentered): 557.3 ms
-- **PCA+cluster** (PCA + k-means, the realistic workflow): 642.3 ms
-- The supervised target methods are all cheap closed-form passes: PTEE ≈ SAM (~64–144 ms), LCF 90 ms. PTEE is ~**8.7×** faster than a bare PCA/SVD decomposition and ~**10.0×** faster than the full PCA+cluster workflow, and scales more gently with pixel count (fig 3, right).
+- **PTEE** (all references, min–max R²): **64.1 ms**
+- **SAM** (spectral-angle correlation, supervised): 140.7 ms
+- **LCF** (non-negative linear-combination fit, supervised): 89.4 ms
+- **PCA** (centered SVD): 552.1 ms
+- **SVD** (uncentered): 541.9 ms
+- **PCA+cluster** (PCA + k-means, the realistic workflow): 621.9 ms
+- The supervised target methods are all cheap closed-form passes: PTEE ≈ SAM (~64–141 ms), LCF 89 ms. PTEE is ~**8.6×** faster than a bare PCA/SVD decomposition and ~**9.7×** faster than the full PCA+cluster workflow, and scales more gently with pixel count (fig 3, right).
 - **Non-negativity comes free with PTEE.** Obtaining *physically non-negative, interpretable* component spectra and abundances from the variance route needs a further **iterative MCR-ALS / NMF** step on top of PCA (+cluster), which repeats a decomposition of this size many times — so the real-world speed gap is larger still. PTEE uses measured spectra as endmembers, so non-negativity holds by construction with no iteration.
 
 ## Takeaways
