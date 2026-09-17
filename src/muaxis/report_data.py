@@ -196,7 +196,13 @@ def build_report_payload(window):
     def stack_profiles(name, stack):
         if stack is None:
             return []
-        profiles = [add_spectrum(f"{name} — whole-image mean", _mean(stack))]
+        # Mirror the main-window spectrum panel: the whole-image mean is
+        # reported only when no spectrum ROI is selected.  Once one or more
+        # ROIs exist, their per-region means replace it.
+        if rois:
+            profiles = []
+        else:
+            profiles = [add_spectrum(f"{name} — whole-image mean", _mean(stack))]
         for i, (x0, y0, x1, y1) in enumerate(rois):
             profiles.append(add_spectrum(f"{name} — ROI {i + 1}", _mean(stack[:, y0:y1, x0:x1])))
         return profiles
@@ -248,6 +254,7 @@ def build_report_payload(window):
               display=getattr(window, "_premap_display", {}).get(name, {"palette": "Jet"}))
 
     segmentation = getattr(window, "_segmentation_config", None) or {}
+    seg_image_groups: list[dict] = []
     for label, group in (segmentation.get("saved_groups") or {}).items():
         if not isinstance(group, dict):
             continue
@@ -262,10 +269,19 @@ def build_report_payload(window):
         if labels is not None:
             labels = np.asarray(labels, dtype=int)
             image = np.zeros((*labels.shape, 3), dtype=np.uint8)
+            # Per-cluster images (each cluster's pixels in its colour on black)
+            # plus the combined all-clusters colour image, for the Segmentation
+            # raw-image folder export.
+            clusters = []
             for cid in np.unique(labels):
                 if cid > 0:
                     color = CLUSTER_COLORS[(int(cid) - 1) % len(CLUSTER_COLORS)]
-                    image[labels == cid] = tuple(int(color[j:j+2], 16) for j in (1, 3, 5))
+                    rgb = tuple(int(color[j:j+2], 16) for j in (1, 3, 5))
+                    image[labels == cid] = rgb
+                    single = np.zeros((*labels.shape, 3), dtype=np.uint8)
+                    single[labels == cid] = rgb
+                    clusters.append({"id": int(cid), "image": single})
+            seg_image_groups.append({"label": label, "combined": image, "clusters": clusters})
         else:
             payload["warnings"].append(f"Segmentation {label}: saved label image was not recorded")
         parameters = dict(group.get("analysis_parameters") or {"Historical conditions": MISSING})
@@ -390,5 +406,10 @@ def build_report_payload(window):
         add_set("PCA-Clustering", "map", getattr(result, "rgb_map", None))
     elif result is not None:
         add_set("SVD/PCA", "map", getattr(result, "rgb_map", None))
+    # Segmentation set: one image per cluster plus the combined all-clusters
+    # colour image (per saved segmentation label).
+    if seg_image_groups:
+        image_sets.append({"name": "Segmentation", "kind": "segmentation",
+                           "data": seg_image_groups, "display": None, "energies": energies})
     payload["image_sets"] = image_sets
     return payload

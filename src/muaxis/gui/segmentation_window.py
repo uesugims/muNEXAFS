@@ -7,7 +7,7 @@ import numpy as np
 import pyqtgraph as pg
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QColor
-from PySide6.QtWidgets import QCheckBox, QComboBox, QDoubleSpinBox, QHBoxLayout, QLabel, QLineEdit, QMainWindow, QPushButton, QSlider, QSpinBox, QTableWidget, QTableWidgetItem, QVBoxLayout, QWidget
+from PySide6.QtWidgets import QApplication, QCheckBox, QComboBox, QDoubleSpinBox, QHBoxLayout, QLabel, QLineEdit, QMainWindow, QPushButton, QSlider, QSpinBox, QTableWidget, QTableWidgetItem, QVBoxLayout, QWidget
 
 from ..io.stxm import ScanStack
 from ..processing.segmentation import SegmentationResult, segment_clusters
@@ -52,21 +52,32 @@ class SegmentationWindow(QMainWindow):
         # slider selects which one (the original tool worked the same way).
         top.addWidget(QLabel("OD energy")); self.od_slider = QSlider(Qt.Orientation.Horizontal); self.od_slider.setRange(0, self.od_stack.shape[0] - 1); self.od_slider.setValue(int(np.clip(od_frame, 0, self.od_stack.shape[0] - 1))); self.od_slider.valueChanged.connect(self._od_frame_changed); top.addWidget(self.od_slider, 1); self.od_energy_label = QLabel(); top.addWidget(self.od_energy_label)
         self.feature_map = self._feature_for_layer(source_label)
-        top.addWidget(QLabel("Lower")); self.low_slider = QSlider(Qt.Orientation.Horizontal); top.addWidget(self.low_slider, 2)
-        top.addWidget(QLabel("Upper")); self.high_slider = QSlider(Qt.Orientation.Horizontal); top.addWidget(self.high_slider, 2); self.run_button = QPushButton("Run"); self.run_button.clicked.connect(self.run_segmentation); top.addWidget(self.run_button); self.reset_button = QPushButton("Reset"); self.reset_button.clicked.connect(self._reset_for_new); top.addWidget(self.reset_button); root.addLayout(top)
-        self.low_slider.setRange(0, 10000); self.high_slider.setRange(0, 10000); self.low_slider.setValue(0); self.high_slider.setValue(10000)
+        # Thresholds are set by dragging the histogram (below) or by the two
+        # value boxes next to "Log Y", not by sliders.  State is held here.
+        self._low_thr, self._high_thr = 0.0, 1.0
+        self._updating_region, self._updating_edits = False, False
+        top.addStretch(1); self.run_button = QPushButton("Run"); self.run_button.clicked.connect(self.run_segmentation); top.addWidget(self.run_button); self.reset_button = QPushButton("Reset"); self.reset_button.clicked.connect(self._reset_for_new); top.addWidget(self.reset_button); root.addLayout(top)
         self.low_label = QLabel(); self.high_label = QLabel(); self.area_label = QLabel(); root.addWidget(self.low_label); root.addWidget(self.high_label); root.addWidget(self.area_label)
 
         display_row = QHBoxLayout()
         self.input_view = pg.ImageView(view=pg.PlotItem()); self.input_view.ui.roiBtn.hide(); self.input_view.ui.menuBtn.hide(); self.input_view.ui.histogram.hide(); display_row.addWidget(self.input_view, 3)
         histogram_panel = QVBoxLayout()
-        histogram_options = QHBoxLayout(); histogram_options.addStretch()
+        histogram_options = QHBoxLayout()
+        histogram_options.addWidget(QLabel("Lower")); self.low_edit = QLineEdit(); self.low_edit.setMaximumWidth(96); self.low_edit.setToolTip("Lower threshold value (type and press Enter)"); histogram_options.addWidget(self.low_edit)
+        histogram_options.addWidget(QLabel("Upper")); self.high_edit = QLineEdit(); self.high_edit.setMaximumWidth(96); self.high_edit.setToolTip("Upper threshold value (type and press Enter)"); histogram_options.addWidget(self.high_edit)
+        histogram_options.addStretch()
         self.histogram_log_y = QCheckBox("Log Y")
         self.histogram_log_y.setToolTip("Display the histogram pixel-count axis on a logarithmic scale")
         self.histogram_log_y.toggled.connect(self._set_histogram_log_scale)
         histogram_options.addWidget(self.histogram_log_y)
         histogram_panel.addLayout(histogram_options)
-        self.histogram = pg.PlotWidget(title="Input histogram"); self.histogram.setLabel("bottom", "Value"); self.histogram.setLabel("left", "Pixels"); histogram_panel.addWidget(self.histogram, 1); display_row.addLayout(histogram_panel, 2); root.addLayout(display_row, 3)
+        self.histogram = pg.PlotWidget(title="Input histogram (drag to set thresholds)"); self.histogram.setLabel("bottom", "Value"); self.histogram.setLabel("left", "Pixels"); histogram_panel.addWidget(self.histogram, 1); display_row.addLayout(histogram_panel, 2); root.addLayout(display_row, 3)
+        # Dragging on the histogram moves whichever threshold is nearer the
+        # cursor; the value boxes stay in sync.
+        self.histogram.scene().sigMouseClicked.connect(self._histogram_clicked)
+        self.histogram.scene().sigMouseMoved.connect(self._histogram_moved)
+        self.low_edit.editingFinished.connect(self._edits_changed)
+        self.high_edit.editingFinished.connect(self._edits_changed)
         self._overlay = pg.ImageItem(); self._overlay.setZValue(10); self.input_view.getView().addItem(self._overlay)
 
         bottom_row = QHBoxLayout()
@@ -76,7 +87,7 @@ class SegmentationWindow(QMainWindow):
         controls = QHBoxLayout(); controls.addWidget(QLabel("Minimum size")); self.min_area_spin = QSpinBox(); self.min_area_spin.setRange(1, self.feature_map.size); self.min_area_spin.setValue(10); self.min_area_spin.valueChanged.connect(self._minimum_size_changed); controls.addWidget(self.min_area_spin); controls.addWidget(QLabel("Profile normalization")); self.norm_combo = QComboBox(); self.norm_combo.addItems(["Min–max", "None", "Two energy values"]); self.norm_combo.currentIndexChanged.connect(self._normalization_changed); controls.addWidget(self.norm_combo); controls.addWidget(QLabel("E1")); self.norm_e1 = QDoubleSpinBox(); controls.addWidget(self.norm_e1); controls.addWidget(QLabel("E2")); self.norm_e2 = QDoubleSpinBox(); controls.addWidget(self.norm_e2); self.exclude_bad = QCheckBox("Exclude bad data"); self.exclude_bad.toggled.connect(self._quality_filter_changed); controls.addWidget(self.exclude_bad); controls.addWidget(QLabel("Label")); self.label_edit = QLineEdit(); self.label_edit.setPlaceholderText("segmentation label"); self.label_edit.setMaximumWidth(180); controls.addWidget(self.label_edit); self.save_button = QPushButton("Save"); self.save_button.setEnabled(False); self.save_button.clicked.connect(self.save_result); controls.addWidget(self.save_button); root.addLayout(controls)
         self.status = QLabel("Threshold preview; profiles use OD"); root.addWidget(self.status)
         self.setCentralWidget(central)
-        self.low_slider.valueChanged.connect(self._threshold_changed); self.high_slider.valueChanged.connect(self._threshold_changed); self.norm_e1.valueChanged.connect(self._plot_selected); self.norm_e2.valueChanged.connect(self._plot_selected)
+        self.norm_e1.valueChanged.connect(self._plot_selected); self.norm_e2.valueChanged.connect(self._plot_selected)
         self._set_feature_map(self.feature_map)
         self._update_od_slider_visibility(source_label)
         lo, hi = float(self.scan.energies_eV.min()), float(self.scan.energies_eV.max())
@@ -150,6 +161,8 @@ class SegmentationWindow(QMainWindow):
 
     def _set_feature_map(self, image: np.ndarray) -> None:
         self.feature_map = image; finite = image[np.isfinite(image)]; self.data_low = float(np.nanmin(finite)) if finite.size else 0.0; self.data_high = float(np.nanmax(finite)) if finite.size else 1.0
+        # A new feature map starts with the thresholds spanning its full range.
+        self._low_thr, self._high_thr = self.data_low, self.data_high
         self.input_view.setImage(image, autoLevels=True, autoRange=True); self._draw_histogram(); self._threshold_changed()
 
     def _normalization_changed(self, index: int) -> None:
@@ -183,9 +196,8 @@ class SegmentationWindow(QMainWindow):
             # Run even though the new layer contains valid pixels.
             self._clear_result_view()
             self._update_od_slider_visibility(name)
-            self.low_slider.blockSignals(True); self.high_slider.blockSignals(True)
-            self.low_slider.setValue(0); self.high_slider.setValue(10000)
-            self.low_slider.blockSignals(False); self.high_slider.blockSignals(False)
+            # ``_set_feature_map`` resets the thresholds to the new layer's full
+            # value range.
             self._set_feature_map(self._feature_for_layer(name))
 
     def _saved_label_changed(self, index: int) -> None:
@@ -199,15 +211,10 @@ class SegmentationWindow(QMainWindow):
             self._load_saved_group(str(label), group)
 
     def _set_threshold_sliders(self, threshold: tuple[float, float]) -> None:
-        span = self.data_high - self.data_low
-        if span > 0:
-            values = [int(np.clip(round((value - self.data_low) / span * 10000), 0, 10000))
-                      for value in sorted(map(float, threshold))]
-        else:
-            values = [0, 10000]
-        self.low_slider.blockSignals(True); self.high_slider.blockSignals(True)
-        self.low_slider.setValue(values[0]); self.high_slider.setValue(values[1])
-        self.low_slider.blockSignals(False); self.high_slider.blockSignals(False)
+        """Set both thresholds to explicit values (used when restoring a saved
+        segmentation).  Named for backward compatibility; there are no sliders."""
+        low, high = sorted(map(float, threshold))
+        self._low_thr, self._high_thr = low, high
         self._threshold_changed()
 
     def _populate_table(self, cluster_ids: list[int], areas: list[int], *, saved: bool) -> None:
@@ -296,7 +303,8 @@ class SegmentationWindow(QMainWindow):
         self.status.setText(f"Reviewing saved segmentation: {label} ({len(ids)} profiles){suffix}")
 
     def _thresholds(self) -> tuple[float, float]:
-        scale = self.data_high - self.data_low; a = self.data_low + scale * self.low_slider.value() / 10000; b = self.data_low + scale * self.high_slider.value() / 10000; return min(a, b), max(a, b)
+        lo = min(self._low_thr, self._high_thr); hi = max(self._low_thr, self._high_thr)
+        return float(np.clip(lo, self.data_low, self.data_high)), float(np.clip(hi, self.data_low, self.data_high))
 
     def _draw_histogram(self) -> None:
         self.histogram.clear(); values = self.feature_map[np.isfinite(self.feature_map)]
@@ -304,12 +312,50 @@ class SegmentationWindow(QMainWindow):
             counts, edges = np.histogram(values, bins=128); self.histogram.plot((edges[:-1] + edges[1:]) / 2, counts, fillLevel=0, brush=(80, 140, 220, 80), pen=pg.mkPen("#5b8ff9"))
         self.hist_region = pg.LinearRegionItem(self._thresholds(), movable=False, brush=pg.mkBrush(255, 80, 80, 70)); self.histogram.addItem(self.hist_region)
 
+    def _histogram_clicked(self, event: object) -> None:
+        try:
+            self._move_nearer_threshold(event.scenePos())
+        except AttributeError:
+            pass
+
+    def _histogram_moved(self, scene_pos: object) -> None:
+        if QApplication.mouseButtons() & Qt.MouseButton.LeftButton:
+            self._move_nearer_threshold(scene_pos)
+
+    def _move_nearer_threshold(self, scene_pos: object) -> None:
+        """Move whichever threshold is nearer the cursor to the cursor value."""
+        plot = self.histogram.getPlotItem()
+        if not plot.sceneBoundingRect().contains(scene_pos):
+            return
+        value = float(np.clip(plot.vb.mapSceneToView(scene_pos).x(), self.data_low, self.data_high))
+        low, high = self._thresholds()
+        if abs(value - low) <= abs(value - high):
+            self._low_thr = value
+        else:
+            self._high_thr = value
+        self._threshold_changed()
+
+    def _edits_changed(self) -> None:
+        if self._updating_edits:
+            return
+        try:
+            low, high = float(self.low_edit.text()), float(self.high_edit.text())
+        except (TypeError, ValueError):
+            self._threshold_changed()  # revert boxes to the current values
+            return
+        self._low_thr, self._high_thr = low, high
+        self._threshold_changed()
+
     def _set_histogram_log_scale(self, enabled: bool) -> None:
         """Switch only the histogram count axis between linear and log scale."""
         self.histogram.setLogMode(x=False, y=enabled)
 
     def _threshold_changed(self) -> None:
-        low, high = self._thresholds(); span = self.data_high - self.data_low; _px = (lambda v: int(round(255 * (v - self.data_low) / span))) if span else (lambda v: 0); self.low_label.setText(f"Lower threshold: {low:.6g}  (pixel value {_px(low)}/255)"); self.high_label.setText(f"Upper threshold: {high:.6g}  (pixel value {_px(high)}/255)"); self.hist_region.setRegion((low, high)); mask = np.isfinite(self.feature_map) & (self.feature_map >= low) & (self.feature_map <= high); rgba = np.zeros((*mask.shape, 4), dtype=np.ubyte); rgba[mask] = (255, 0, 0, 100); self._overlay.setImage(rgba, autoLevels=False); selected = int(mask.sum()); dx = float(np.median(np.diff(self.scan.header.x_um))) if self.scan.header.x_um is not None and len(self.scan.header.x_um) > 1 else 1.0; dy = float(np.median(np.diff(self.scan.header.y_um))) if self.scan.header.y_um is not None and len(self.scan.header.y_um) > 1 else 1.0; self.area_label.setText(f"Selected area: {selected} pixels / {abs(selected * dx * dy):.6g} µm² / {selected / self.feature_map.size * 100:.2f}%")
+        low, high = self._thresholds(); span = self.data_high - self.data_low; _px = (lambda v: int(round(255 * (v - self.data_low) / span))) if span else (lambda v: 0); self.low_label.setText(f"Lower threshold: {low:.6g}  (pixel value {_px(low)}/255)"); self.high_label.setText(f"Upper threshold: {high:.6g}  (pixel value {_px(high)}/255)")
+        self._updating_edits = True; self.low_edit.setText(f"{low:.6g}"); self.high_edit.setText(f"{high:.6g}"); self._updating_edits = False
+        if getattr(self, "hist_region", None) is not None:
+            self.hist_region.setRegion((low, high))
+        mask = np.isfinite(self.feature_map) & (self.feature_map >= low) & (self.feature_map <= high); rgba = np.zeros((*mask.shape, 4), dtype=np.ubyte); rgba[mask] = (255, 0, 0, 100); self._overlay.setImage(rgba, autoLevels=False); selected = int(mask.sum()); dx = float(np.median(np.diff(self.scan.header.x_um))) if self.scan.header.x_um is not None and len(self.scan.header.x_um) > 1 else 1.0; dy = float(np.median(np.diff(self.scan.header.y_um))) if self.scan.header.y_um is not None and len(self.scan.header.y_um) > 1 else 1.0; self.area_label.setText(f"Selected area: {selected} pixels / {abs(selected * dx * dy):.6g} µm² / {selected / self.feature_map.size * 100:.2f}%")
 
     def _cluster_rgba(self) -> np.ndarray:
         labels = self.result.labels; rgba = np.zeros((*labels.shape, 4), dtype=np.ubyte); palette = [(255, 80, 80), (80, 180, 255), (100, 220, 100), (255, 190, 60), (200, 100, 255), (50, 220, 200), (255, 100, 180), (160, 220, 80)]

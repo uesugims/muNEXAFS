@@ -144,6 +144,29 @@ def export_image_set(image_set: dict, directory: Path) -> list[Path]:
     outputs = []
     if data is None:
         return outputs
+    if image_set.get("kind") == "segmentation":
+        # ``data`` is a list of saved segmentation groups, each with a combined
+        # all-clusters colour image and one image per cluster.  With several
+        # saved labels, each goes in its own sub-folder.
+        groups = list(data)
+        for group in groups:
+            label = str(group.get("label", "segmentation"))
+            target = folder / _safe_name(label) if len(groups) > 1 else folder
+            target.mkdir(parents=True, exist_ok=True)
+            combined = group.get("combined")
+            if combined is not None:
+                path = target / "all_clusters.png"
+                Image.fromarray(_image_array(combined)).save(path)
+                outputs.append(path)
+            for cluster in group.get("clusters", []):
+                cid = cluster.get("id")
+                cimg = cluster.get("image")
+                if cimg is None:
+                    continue
+                path = target / f"cluster_{int(cid):03d}.png"
+                Image.fromarray(_image_array(cimg)).save(path)
+                outputs.append(path)
+        return outputs
     if image_set.get("kind") == "stack":
         stack = np.asarray(data)
         energies = image_set.get("energies")

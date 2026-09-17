@@ -264,6 +264,19 @@ class MainWindow(QMainWindow):
         )
         self.energy_line.sigPositionChanged.connect(self._energy_line_changed)
         self.spectrum_plot.addItem(self.energy_line)
+        # Whole-image mean spectrum: shown when no spectrum ROI is selected, and
+        # hidden as soon as one or more ROIs exist (their per-region means replace
+        # it).  Kept as a persistent curve so the main spectrum plot is never
+        # cleared wholesale (which would also drop the energy cursor line).
+        self.whole_image_curve = self.spectrum_plot.plot(
+            pen=pg.mkPen("#9e9e9e", width=2, style=Qt.PenStyle.DashLine), name="Whole-image mean"
+        )
+        self.whole_image_curve.setVisible(False)
+        # Clicking or dragging anywhere on the spectrum plot moves the energy
+        # cursor (the vertical bar) to that energy, selecting the frame — this
+        # replaces the frame slider.
+        self.spectrum_plot.scene().sigMouseClicked.connect(self._spectrum_mouse_clicked)
+        self.spectrum_plot.scene().sigMouseMoved.connect(self._spectrum_mouse_moved)
         layout.addWidget(self.spectrum_plot, stretch=1)
         self.setCentralWidget(central)
         self.image_view.ui.histogram.region.sigRegionChanged.connect(self._map_levels_changed)
@@ -315,10 +328,24 @@ class MainWindow(QMainWindow):
         controls_layout = QVBoxLayout(controls)
         self.open_button = QPushButton("Open .hdr…")
         controls_layout.addWidget(self.open_button)
-        controls_layout.addWidget(QLabel("Frame"))
-        self.frame_slider = QSlider(Qt.Orientation.Horizontal)
-        self.frame_slider.setEnabled(False)
-        controls_layout.addWidget(self.frame_slider)
+        # Frame selection is driven by the energy cursor on the spectrum plot;
+        # this box is the numeric read-out and lets the user jump to a frame by
+        # typing its number and pressing Enter (there is no frame slider).
+        frame_row = QHBoxLayout()
+        frame_row.addWidget(QLabel("Frame"))
+        self.frame_edit = QLineEdit()
+        self.frame_edit.setEnabled(False)
+        self.frame_edit.setMaximumWidth(70)
+        self.frame_edit.setToolTip("Type a frame number and press Enter to jump to it")
+        frame_row.addWidget(self.frame_edit)
+        self.frame_total_label = QLabel("/ —")
+        frame_row.addWidget(self.frame_total_label)
+        frame_row.addStretch()
+        controls_layout.addLayout(frame_row)
+        self.frame_energy_label = QLabel("Energy: —")
+        controls_layout.addWidget(self.frame_energy_label)
+        # ``frame_label`` still carries the per-frame / map status text used
+        # throughout ``_show_frame``.
         self.frame_label = QLabel("—")
         controls_layout.addWidget(self.frame_label)
         controls_layout.addWidget(QLabel("Current image layer"))
@@ -345,7 +372,7 @@ class MainWindow(QMainWindow):
 
     def _connect_signals(self) -> None:
         self.open_button.clicked.connect(self.open_scan_dialog)
-        self.frame_slider.valueChanged.connect(self._select_frame)
+        self.frame_edit.returnPressed.connect(self._frame_edit_entered)
         self.layer_list.currentRowChanged.connect(self._layer_changed)
         self.recent_list.itemClicked.connect(self._recent_item_activated)
 
@@ -381,9 +408,8 @@ class MainWindow(QMainWindow):
         self._session_path = None
         self._reset_analysis_state()
         self._current_frame = 0
-        self.frame_slider.setRange(0, len(scan.frame_paths) - 1)
-        self.frame_slider.setValue(0)
-        self.frame_slider.setEnabled(True)
+        self.frame_total_label.setText(f"/ {len(scan.frame_paths)}")
+        self.frame_edit.setEnabled(True)
         self.layer_list.setEnabled(True)
         self.select_roi_action.setEnabled(True)
         self.save_action.setEnabled(True)
@@ -412,11 +438,54 @@ class MainWindow(QMainWindow):
         self._show_frame(self._current_frame)
         self._restoring_session = False
 
+    def _frame_count(self) -> int:
+        return len(self.scan.frame_paths) if self.scan is not None else 0
+
     def _select_frame(self, frame: int) -> None:
         if self.scan is None:
             return
+        frame = int(np.clip(frame, 0, max(0, self._frame_count() - 1)))
         self._show_frame(frame)
         self._persist_scan_session()
+
+    def _frame_edit_entered(self) -> None:
+        """Jump to the frame number typed in the frame box (1-based)."""
+        if self.scan is None:
+            return
+        try:
+            index = int(self.frame_edit.text()) - 1
+        except (TypeError, ValueError):
+            # Restore the current value on invalid input.
+            self.frame_edit.setText(str(self._current_frame + 1))
+            return
+        self._select_frame(index)
+
+    def _spectrum_mouse_clicked(self, event: object) -> None:
+        """Move the energy cursor to the clicked energy (frame selection)."""
+        try:
+            scene_pos = event.scenePos()
+        except AttributeError:
+            return
+        self._move_energy_cursor_to_scene(scene_pos)
+
+    def _spectrum_mouse_moved(self, scene_pos: object) -> None:
+        """Scrub the energy cursor while the left mouse button is held down."""
+        if not (QApplication.mouseButtons() & Qt.MouseButton.LeftButton):
+            return
+        self._move_energy_cursor_to_scene(scene_pos)
+
+    def _move_energy_cursor_to_scene(self, scene_pos: object) -> None:
+        if self.scan is None or self.energy_line is None or not self.frame_edit.isEnabled():
+            return
+        plot_item = self.spectrum_plot.getPlotItem()
+        if not plot_item.sceneBoundingRect().contains(scene_pos):
+            return
+        energy = float(plot_item.vb.mapSceneToView(scene_pos).x())
+        lo, hi = float(np.min(self.scan.energies_eV)), float(np.max(self.scan.energies_eV))
+        energy = min(max(energy, lo), hi)
+        # Setting the line value triggers ``_energy_line_changed``, which snaps
+        # to the nearest frame and updates the image.
+        self.energy_line.setValue(energy)
 
     def _layer_changed(self, _row: int) -> None:
         self._show_frame(self._current_frame)
@@ -428,7 +497,7 @@ class MainWindow(QMainWindow):
         self._current_frame = frame
         layer_name = self.layer_list.currentItem().text() if self.layer_list.currentItem() else ""
         if layer_name == "PTEE RGBY map" and self._fitting_result is not None:
-            self.frame_slider.setEnabled(False); self.map_palette_combo.setEnabled(False); self.reset_map_levels_button.setEnabled(False)
+            self.frame_edit.setEnabled(False); self.map_palette_combo.setEnabled(False); self.reset_map_levels_button.setEnabled(False)
             # rgb_y holds premultiplied display colours already in [0, 1].  The
             # image view is shared with the grayscale/map layers, so its item
             # keeps their levels (e.g. OD's ~[0, 3]).  Without an explicit range
@@ -438,7 +507,7 @@ class MainWindow(QMainWindow):
             self.image_view.setImage(self._fitting_result.rgb_y, autoLevels=False, autoRange=True, levels=(0.0, 1.0))  # type: ignore[attr-defined]
             self.frame_label.setText("Map — PTEE RGBY"); self.statusBar().showMessage("PTEE RGBY map"); self._update_spectrum(); return
         if layer_name == "SVD/PCA RGB map" and self._multivariate_result is not None:
-            self.frame_slider.setEnabled(False)
+            self.frame_edit.setEnabled(False)
             # rgb_map is an RGBA image already in [0, 1].  The image view is
             # shared with the grayscale map layers, so its item keeps their
             # levels (a peak map's are the energy range, e.g. ~[280, 300]).
@@ -448,13 +517,13 @@ class MainWindow(QMainWindow):
             self.image_view.setImage(self._multivariate_result.rgb_map, autoLevels=False, autoRange=True, levels=(0.0, 1.0))  # type: ignore[attr-defined]
             self.frame_label.setText("Map — SVD/PCA RGB"); self.statusBar().showMessage("SVD/PCA RGB map"); self._update_spectrum(); return
         if layer_name == "PCA cluster map" and self._multivariate_result is not None:
-            self.frame_slider.setEnabled(False)
+            self.frame_edit.setEnabled(False)
             # rgb_map is an RGBA cluster map already in [0, 1]; pin levels so the
             # colours render correctly regardless of the previously shown layer.
             self.image_view.setImage(self._multivariate_result.rgb_map, autoLevels=False, autoRange=True, levels=(0.0, 1.0))  # type: ignore[attr-defined]
             self.frame_label.setText("Map — PCA clusters"); self.statusBar().showMessage("PCA cluster map"); self._update_spectrum(); return
         if layer_name in self._premap_maps:
-            self.frame_slider.setEnabled(False)
+            self.frame_edit.setEnabled(False)
             self.map_palette_combo.setEnabled(True)
             self.reset_map_levels_button.setEnabled(True)
             display = self._premap_display.setdefault(layer_name, {"palette": "Jet", "levels": None})
@@ -478,7 +547,7 @@ class MainWindow(QMainWindow):
             self.statusBar().showMessage(f"{layer_name} | color levels adjustable in the right histogram")
             self._update_spectrum()
             return
-        self.frame_slider.setEnabled(True)
+        self.frame_edit.setEnabled(True)
         self.map_palette_combo.setEnabled(False)
         self.reset_map_levels_button.setEnabled(False)
         self.image_view.setColorMap(_gray_colormap())
@@ -492,6 +561,7 @@ class MainWindow(QMainWindow):
             f"{frame + 1}/{len(self.scan.frame_paths)} — "
             f"{self.scan.energies_eV[frame]:.6g} eV"
         )
+        self._update_frame_readout(frame)
         metadata = self.scan.header.frames[frame]
         current = "—" if metadata.storage_ring_current is None else f"{metadata.storage_ring_current:.6g}"
         self.statusBar().showMessage(
@@ -511,6 +581,15 @@ class MainWindow(QMainWindow):
         if self.energy_cursor_label is not None:
             self.energy_cursor_label.setText(f"Energy cursor: {energy:.6g} eV")
 
+    def _update_frame_readout(self, frame: int) -> None:
+        """Refresh the frame-number box and its energy label (no signals)."""
+        if self.scan is None:
+            return
+        self.frame_edit.blockSignals(True)
+        self.frame_edit.setText(str(frame + 1))
+        self.frame_edit.blockSignals(False)
+        self.frame_energy_label.setText(f"Energy: {self.scan.energies_eV[frame]:.6g} eV")
+
     def _energy_line_changed(self, line: pg.InfiniteLine) -> None:
         if self._updating_energy_line or self.scan is None:
             return
@@ -520,8 +599,8 @@ class MainWindow(QMainWindow):
             self.energy_cursor_label.setText(
                 f"Energy cursor: {self.scan.energies_eV[index]:.6g} eV"
             )
-        if self.frame_slider.value() != index:
-            self.frame_slider.setValue(index)
+        if index != self._current_frame:
+            self._select_frame(index)
 
     def _selected_layer_image(self, frame: int) -> np.ndarray:
         assert self.scan is not None and self.scan.transmission is not None
@@ -559,6 +638,9 @@ class MainWindow(QMainWindow):
         normalized = self.normalization_combo is not None and self.normalization_combo.currentIndex() != 0
         self.spectrum_plot.setLabel("left", f"Normalized {label}" if normalized else label, units=None)
         if self._spectrum_rois:
+            # With one or more ROIs, the whole-image mean is replaced by the
+            # per-ROI means.
+            self.whole_image_curve.setVisible(False)
             for roi, curve in zip(self._spectrum_rois, self._spectrum_curves):
                 x0, y0, x1, y1 = self._roi_bounds(roi, width, height)
                 values = np.nanmean(stack[:, y0:y1, x0:x1], axis=(1, 2))
@@ -567,7 +649,11 @@ class MainWindow(QMainWindow):
                 curve.setVisible(True)
             self.spectrum_plot.setTitle(f"Mean {label} — {len(self._spectrum_rois)} ROI(s)")
         else:
-            self.spectrum_plot.setTitle(f"Select spectrum ROI ({label})")
+            # No ROI selected: show the whole-image mean spectrum.
+            values = self._normalize_spectrum(np.nanmean(stack, axis=(1, 2)))
+            self.whole_image_curve.setData(self.scan.energies_eV, values)
+            self.whole_image_curve.setVisible(True)
+            self.spectrum_plot.setTitle(f"Whole-image mean {label}")
 
     def _configure_normalization(self, energies: np.ndarray) -> None:
         if self.norm_e1 is None or self.norm_e2 is None:
@@ -751,7 +837,9 @@ class MainWindow(QMainWindow):
         data_stack = self._od_result.optical_density if use_od else self.scan.transmission  # type: ignore[attr-defined]
         viewer = RegistrationWindow(self.scan, data_stack, "OD" if use_od else "Transmission")
         self._registration_windows.append(viewer)
-        viewer.resultReady.connect(self._set_registration_result)
+        # Applying the registration also (re)builds the pre-map with default
+        # ranges, so the downstream maps are always in sync with the alignment.
+        viewer.resultReady.connect(lambda result: self._set_registration_result(result, auto_premap=True))
         viewer.destroyed.connect(lambda: self._registration_window_closed(viewer))
         viewer.show()
         self._rebuild_window_menu()
@@ -779,11 +867,11 @@ class MainWindow(QMainWindow):
         if self._closing:
             return
         if getattr(viewer, "result", None) is not None:
-            self._set_registration_result(viewer.result)
+            self._set_registration_result(viewer.result, auto_premap=True)
         self._remove_registration_window(viewer)
         self._persist_scan_session()
 
-    def _set_registration_result(self, result: object) -> None:
+    def _set_registration_result(self, result: object, auto_premap: bool = False) -> None:
         self._registered_stack = result.registered  # type: ignore[attr-defined]
         self._registration_config = {
             "reference_index": int(result.reference_index),  # type: ignore[attr-defined]
@@ -796,8 +884,41 @@ class MainWindow(QMainWindow):
         # Move the active layer to the registered layer after registration.
         registered_row = self.layer_list.findItems(registered_label, Qt.MatchFlag.MatchExactly)[0]
         self.layer_list.setCurrentItem(registered_row)
+        # Applying a registration rebuilds the pre-map from the aligned stack
+        # with default energy ranges.  The Pre-map window is only needed when
+        # the user wants to change those ranges (it re-creates the maps then).
+        if auto_premap:
+            self._auto_create_premap()
         self._persist_scan_session()
         self._show_frame(self._current_frame)
+
+    def _auto_create_premap(self) -> None:
+        """Create net-absorption / peak / pre-edge maps from the registered
+        stack with default energy ranges (pre-edge = first fifth, post-edge =
+        remainder)."""
+        if self.scan is None or self._registered_stack is None:
+            return
+        from ..processing.premap import net_absorption_map, peak_map, pre_edge_subtract
+        energies = self.scan.energies_eV
+        source_stack = self._registered_stack
+        source_label = "OD" if self._od_result is not None else "Transmission"
+        low, high = float(energies[0]), float(energies[-1])
+        split = low + 0.2 * (high - low)
+        pre_edge_range = (low, split)
+        post_edge_range = (split, high)
+        try:
+            self._set_premap_maps({
+                "net": net_absorption_map(source_stack, energies, pre_edge_range, post_edge_range),
+                "peak": peak_map(source_stack, energies, post_edge_range),
+                "presub_stack": pre_edge_subtract(source_stack, energies, pre_edge_range),
+                "pre_edge_range": list(pre_edge_range),
+                "post_edge_range": list(post_edge_range),
+                "source": source_label,
+                "denoised_stack": None,
+            })
+        except (ValueError, KeyError):
+            # Degenerate energy axes (e.g. a single frame) simply skip the map.
+            pass
 
     def open_premap_window(self) -> None:
         if self.scan is None:
@@ -1334,7 +1455,8 @@ class MainWindow(QMainWindow):
                 pass
         frame = state.get("frame", 0)
         if isinstance(frame, int) and 0 <= frame < len(self.scan.frame_paths):
-            self.frame_slider.setValue(frame)
+            self._current_frame = frame
+            self._update_frame_readout(frame)
         # Prefer the layer name: it survives a reordered or partially restored
         # layer list.  Fall back to the positional index only for sidecars
         # written before the name was recorded.

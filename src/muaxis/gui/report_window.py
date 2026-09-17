@@ -20,7 +20,8 @@ from ..reporting import (
 # Per-type raw-image folders (unchecked by default).  Names must match the
 # ``image_sets`` produced by build_report_payload.
 IMAGE_SET_NAMES = ("Transmission", "OD (registered)", "OD (-pre edge)",
-                   "Net absorption", "Peakmap", "PTEE-R2", "PCA-Clustering", "SVD/PCA")
+                   "Net absorption", "Peakmap", "Segmentation", "PTEE-R2",
+                   "PCA-Clustering", "SVD/PCA")
 
 
 class _ReportWorker(QObject):
@@ -143,7 +144,7 @@ class ReportWindow(QMainWindow):
         options.addLayout(doc_row)
         # Per-type raw-image folders: unchecked by default; each checked type
         # writes a folder with all of its images (every frame for stacks).
-        for start in (0, 4):
+        for start in range(0, len(IMAGE_SET_NAMES), 4):
             row = QHBoxLayout()
             if start == 0:
                 row.addWidget(QLabel("Raw image folders:"))

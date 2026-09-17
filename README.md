@@ -1,388 +1,449 @@
-# muNEXAFS — STXM-NEXAFS データ解析アプリケーション
+# muNEXAFS — STXM-NEXAFS data-analysis application
 
-UVSOR の走査型透過X線顕微鏡(STXM）／ NEXAFS スタックデータ（`.hdr` + `.xim`）を
-読み込み、光学密度（OD）変換・ドリフト補正・プリマップ作成・セグメンテーション・
-スペクトルフィッティング・多変量解析（SVD/PCA）までを一貫して行う PySide6 製の
-デスクトップアプリケーションです。
+*日本語版は [README_jp.md](README_jp.md) にあります.*
 
-数値処理層（`muaxis.processing`）は GUI に依存しないため、バッチスクリプトや
-ノートブックからも同じアルゴリズムを再利用できます。
+A PySide6 desktop application that reads UVSOR scanning transmission X-ray
+microscopy (STXM) / NEXAFS stack data (`.hdr` + `.xim`) and carries it through
+optical-density (OD) conversion, drift registration, pre-map generation,
+segmentation, spectral fitting, and multivariate analysis (SVD/PCA) in one
+consistent workflow.
 
-配布・アプリケーション名は `muNEXAFS` です。既存スクリプトおよび保存済み解析との
-互換性を維持するため、Python の import 名は引き続き `muaxis` を使用します。
+The numerical layer (`muaxis.processing`) is independent of the GUI, so the same
+algorithms can be reused from batch scripts and notebooks.
 
----
-
-## 目次
-
-- [セットアップ](#セットアップ)
-- [起動方法](#起動方法)
-- [データ形式](#データ形式)
-- [全体のワークフロー](#全体のワークフロー)
-- [メインウィンドウの基本操作](#メインウィンドウの基本操作)
-- [各プロセスの手法と操作手順](#各プロセスの手法と操作手順)
-  - [1. 光学密度（OD）変換](#1-光学密度od変換)
-  - [2. レジストレーション（ドリフト補正）](#2-レジストレーションドリフト補正)
-  - [3. プリマップ作成](#3-プリマップ作成)
-  - [4. セグメンテーション](#4-セグメンテーション)
-  - [5. スペクトルフィッティング（R² RGBY）](#5-スペクトルフィッティングr-rgby)
-  - [6. SVD / PCA（多変量解析）](#6-svd--pca多変量解析)
-- [セッションの保存と復元](#セッションの保存と復元)
-- [プロジェクト構成](#プロジェクト構成)
+The distribution and application name is `muNEXAFS`. The Python import name
+remains `muaxis` to keep compatibility with existing scripts and saved analyses.
 
 ---
 
-## セットアップ
+## Table of contents
 
-`Makefile` がプロジェクト専用の仮想環境（`.venv`）を作成し、GUI・解析・テスト用の
-依存関係を導入します。
+- [Setup](#setup)
+- [Running](#running)
+- [Data format](#data-format)
+- [Overall workflow](#overall-workflow)
+- [Main-window basics](#main-window-basics)
+- [Methods and step-by-step operation for each process](#methods-and-step-by-step-operation-for-each-process)
+  - [1. Optical-density (OD) conversion](#1-optical-density-od-conversion)
+  - [2. Registration (drift correction)](#2-registration-drift-correction)
+  - [3. Pre-map generation](#3-pre-map-generation)
+  - [4. Segmentation](#4-segmentation)
+  - [5. PTEE(-R²) spectral fitting](#5-pteer-spectral-fitting)
+  - [6. PCA + clustering / SVD (multivariate analysis)](#6-pca--clustering--svd-multivariate-analysis)
+- [Saving and restoring sessions](#saving-and-restoring-sessions)
+- [Project layout](#project-layout)
+
+---
+
+## Setup
+
+The `Makefile` creates a project-local virtual environment (`.venv`) and installs
+the GUI, analysis, and test dependencies.
 
 ```bash
 make setup
 ```
 
-導入される主な依存パッケージ:
+Main dependencies installed:
 
-| 用途 | パッケージ |
+| Purpose | Package |
 |---|---|
-| 数値計算 | numpy |
+| Numerics | numpy |
 | GUI | PySide6, pyqtgraph |
-| 解析 | scipy, scikit-image |
-| テスト | pytest |
+| Analysis | scipy, scikit-image |
+| Testing | pytest |
 
-## 起動方法
+## Running
 
 ```bash
-# GUI を起動
+# Launch the GUI
 make run
 
-# スキャンを指定して GUI で開く
+# Open the GUI on a specific scan
 make run ARGS='--open /path/to/UV_210902001.hdr'
 
-# ヘッダを読み込み内容を要約表示（GUI を開かずに検証）
+# Read a header and print a summary (validation without opening the GUI)
 make run ARGS='--inspect /path/to/UV_210902001.hdr'
 
-# テスト実行
+# Run the tests
 make test
 ```
 
-`--inspect` はフレーム数・エネルギー範囲・スタック形状・I0／ドリフトの有無を
-コンソールに表示し、リーダが対象データを正しく開けるかを確認できます。
+`--inspect` prints the number of frames, energy range, stack shape, and whether
+I0 / drift are present, so you can confirm the reader opens the target data
+correctly.
 
-## データ形式
+## Data format
 
-1 スキャンは 1 つのディレクトリに次のファイル群として格納されます。
+One scan is stored as the following files in a single directory.
 
-| ファイル | 内容 |
+| File | Contents |
 |---|---|
-| `<stem>.hdr` | ヘッダ。ラベル・スキャン種別・エネルギー軸（StackAxis）・空間軸（PAxis/QAxis）・各フレームのメタ情報 |
-| `<stem>_aNNN.xim` | 各エネルギーフレームの透過強度画像（タブ区切り）。フレーム番号はヘッダの画像レコードで対応付け |
-| `i0.txt`（任意） | 入射強度 I0（エネルギーごと） |
-| `drift.txt`（任意） | 事前計算済みのドリフト量（フレームごとの x, y） |
+| `<stem>.hdr` | Header: label, scan type, energy axis (StackAxis), spatial axes (PAxis/QAxis), and per-frame metadata |
+| `<stem>_aNNN.xim` | Transmission-intensity image for each energy frame (tab-separated). Frame numbers are matched through the header's image records |
+| `i0.txt` (optional) | Incident intensity I0 (per energy) |
+| `drift.txt` (optional) | Pre-computed drift amounts (x, y per frame) |
 
-透過スタックは内部で `(energy, y, x)` の順に保持されます。リーダは
-**source-current 正規化やドリフト補正を自動では行いません**。これらは解析上の
-判断であり、処理層で明示的に実行する設計です。
+The transmission stack is held internally in `(energy, y, x)` order. The reader
+**does not automatically apply source-current normalization or drift
+correction**: these are analysis decisions and are performed explicitly in the
+processing layer.
 
 ---
 
-## 全体のワークフロー
+## Overall workflow
 
 ```
-スキャンを開く
-   └─▶ スペクトル ROI 選択・エネルギー移動（メインウィンドウ）
-        └─▶ [OD] 直接ビーム ROI から OD を算出
-             ├─▶ [Registration] ドリフト補正（任意）
-             ├─▶ [Pre-map] 正味吸収マップ／ピークマップ作成
-             │        └─▶ [Segmentation] 閾値クラスタリング＋クラスタ平均スペクトル
-             │                 └─▶ [Spectral fitting] 参照スペクトルとの R² マッピング
-             └─▶ [SVD / PCA] 多変量分解とリニアコンビネーションマップ
+Open a scan
+   └─▶ Select a spectrum ROI / move the energy cursor (main window)
+        └─▶ [OD] compute OD from a direct-beam ROI
+             ├─▶ [Registration] drift correction (optional)
+             │        └─▶ applying it also builds the pre-map automatically
+             ├─▶ [Pre-map] net-absorption / peak maps (open only to change ranges)
+             │        └─▶ [Segmentation] threshold clustering + cluster mean spectra
+             │                 └─▶ [PTEE(-R²)] R² mapping against reference spectra
+             └─▶ [PCA + clustering / SVD] multivariate decomposition and maps
 ```
 
-各プロセスは `Process` メニューから起動し、結果はメインウィンドウ左の
-**レイヤーリスト**に追加されます。解析状態はデータセットごとに自動保存され、
-次回同じスキャンを開くと復元されます（[セッションの保存と復元](#セッションの保存と復元)）。
+Each process is launched from the `Process` menu, and its result is added to the
+**layer list** on the left of the main window. Analysis state is saved
+per-dataset automatically and restored the next time the same scan is opened
+(see [Saving and restoring sessions](#saving-and-restoring-sessions)).
 
-上流の解析が済んでいないメニュー項目は無効化されています（例:OD を算出するまで
-Segmentation / Spectral fitting は選べません）。
-
----
-
-## メインウィンドウの基本操作
-
-- **スキャンを開く**: `File ▸ Open scan…`（Ctrl+O）。過去に開いたスキャンは左の
-  リストから再選択できます。
-- **レイヤーリスト**: 中央画像に表示する対象を切り替えます。基本の
-  `Transmission (raw)` / `Optical density (OD)` に加え、各プロセスの結果
-  （`Registered OD`、`Net absorption map (OD)`、`Peak map (OD)`、
-  `Spectral fitting RGBY` など）が追加されます。
-- **フレーム移動**: 画像下のスライダ、またはスペクトルプロット上の黄色い
-  エネルギーカーソル線をドラッグして、表示エネルギーを移動します。
-- **スペクトル ROI**: `ROI ▸ Select spectrum ROI` で矩形 ROI を置くと、その領域の
-  平均スペクトル（透過または OD）がプロットされます。ROI は複数置けます。
-- **スペクトル正規化**: プロット下のコンボボックスで `None` / `Each plot min–max`
-  / `Two energy values`（E1・E2 の 2 点で規格化）を選択します。
-- **マップの表示調整**: プリマップ表示時はパレット（Jet / Fire / Grayscale）と
-  右側ヒストグラムのレベルを調整できます。
+Menu entries whose upstream analysis is not yet done are disabled (for example,
+Segmentation / PTEE(-R²) cannot be chosen until OD has been computed).
 
 ---
 
-## 各プロセスの手法と操作手順
+## Main-window basics
 
-### 1. 光学密度（OD）変換
+- **Open a scan**: `File ▸ Open scan…` (Ctrl+O). Previously opened scans can be
+  reselected from the list on the left.
+- **Layer list**: switches what is shown in the central image. In addition to the
+  base `Transmission (raw)` / `Optical density (OD)`, each process adds its
+  result (`Registered OD`, `Net absorption map (OD)`, `Peak map (OD)`,
+  `OD - pre-edge (OD)`, `PTEE RGBY map`, `PCA cluster map`, …).
+- **Frame navigation**: there is no frame slider. Type a frame number in the
+  **Frame** box and press Enter to jump to it, or **click / drag anywhere on the
+  spectrum plot** to move the yellow energy cursor — the nearest frame is
+  selected and the box and energy label update accordingly. The energy label
+  next to the box shows the current frame's energy.
+- **Spectrum profile**: with **no ROI selected, the whole-image mean spectrum**
+  (transmission or OD) is shown as a dashed grey curve. As soon as one or more
+  spectrum ROIs exist, the whole-image mean is hidden and replaced by the
+  per-ROI mean spectra. This is mirrored in the report output.
+- **Spectrum ROI**: `ROI ▸ Select spectrum ROI` places a rectangular ROI whose
+  mean spectrum is plotted. Multiple ROIs can be placed.
+- **Spectrum normalization**: the combo box below the plot selects `None` /
+  `Each plot min–max` / `Two energy values` (normalize at two energies E1, E2).
+- **Map display**: when a pre-map is shown, the palette (Jet / Fire / Grayscale)
+  and the levels in the right-hand histogram can be adjusted.
 
-**手法**
+---
 
-透過像 I と入射強度 I0 から、画素ごとに光学密度（吸光度）
+## Methods and step-by-step operation for each process
+
+### 1. Optical-density (OD) conversion
+
+**Method**
+
+From the transmission image I and incident intensity I0, the optical density
+(absorbance) is computed per pixel,
 
 ```
 OD = log(I0 / I)
 ```
 
-を計算します（`muaxis.processing.absorbance.compute_optical_density`）。
-入射強度 I0 は、**直接ビーム（試料のない明るい領域）ROI の平均透過強度**を
-エネルギーごとに求めて用います。非有限値や 0 以下の画素は無効として NaN に
-なります。
+(`muaxis.processing.absorbance.compute_optical_density`). I0 is taken as the
+**mean transmission of a direct-beam (bright, sample-free) ROI** at each energy.
+Non-finite pixels or pixels ≤ 0 are marked invalid (NaN).
 
-必要に応じて蓄積リング電流による補正（`current_reference / current` によるスケール）
-も可能ですが、これはオプトインで、0 や非有限の電流値は明示的にエラーとして弾きます。
+Optional storage-ring-current correction (scaling by
+`current_reference / current`) is available; it is opt-in, and zero or non-finite
+current values are rejected explicitly as errors.
 
-**操作手順**
+**Operation**
 
-1. `Process ▸ OD window` を開く。
-2. 「Select direct-beam ROI」を押し、試料のない明るい領域に黄色い矩形を置く
-   （ドラッグ・リサイズ可）。
-3. ROI から自動的に I0 が求まり OD が計算されます。「Optical density (OD)」ラジオ
-   ボタンで OD 表示、「Direct transmission」で生透過表示に切り替え。
-4. スライダでフレーム（エネルギー）を移動して確認。
-5. 計算された OD はメインウィンドウに反映され、レイヤーリストに
-   `Optical density (OD)` が追加、以降のプロセス（Registration / Pre-map /
-   Segmentation / Spectral fitting）が有効化されます。
+1. Open `Process ▸ OD window`.
+2. Press "Select direct-beam ROI" and place the yellow rectangle over a bright,
+   sample-free region (draggable and resizable).
+3. I0 is derived from the ROI automatically and OD is computed. Switch between
+   the "Optical density (OD)" and "Direct transmission" radio buttons.
+4. Move the slider to inspect frames (energies).
+5. The computed OD is reflected in the main window, `Optical density (OD)` is
+   added to the layer list, and the downstream processes (Registration /
+   Pre-map / Segmentation / PTEE(-R²)) are enabled.
 
-> ROI を「Clear ROI」で消すと OD は破棄されます。
-
----
-
-### 2. レジストレーション（ドリフト補正）
-
-**手法**
-
-エネルギー掃引中に生じる試料ドリフトを、フレーム間の平行移動として補正します
-（`muaxis.processing.registration.register_translation_stack`）。
-
-- **位相相関法**（scikit-image の `phase_cross_correlation`）で、基準フレームに対する
-  各フレームのサブピクセルシフトを推定。`upsample_factor` で分解能を上げます。
-- 推定シフトは `scipy.ndimage.shift`（線形補間、範囲外は NaN）で適用。
-- **基準モード**は 2 種類:
-  - `Fixed`: 指定した 1 枚を常に基準にする。
-  - `Previous`: 直前の補正済みフレームを基準にして順次追従する。
-- シフト推定時のみ NaN をフレーム中央値で埋め、返す補正済みスタックは NaN を保持します。
-
-**操作手順**
-
-1. `Process ▸ Registration` を開く（OD 算出済みなら OD スタック、未算出なら
-   透過スタックが入力になります）。
-2. 基準モード（Fixed / Previous）、基準フレーム番号、サブピクセル分解能
-   （upsample factor、既定 10）を設定。
-3. 「Run registration」を押す（別スレッドで実行）。完了するとフレームごとの
-   Shift X / Shift Y（px）が表に表示されます。
-4. 「Apply registered stack」を押すと補正結果がメインウィンドウに反映され、
-   レイヤーリストに `Registered OD`（または `Registered transmission`）が追加されます。
-
-> Run 後に Apply せずウィンドウを閉じても、計算済みの補正結果は破棄されずに反映されます。
+> Clearing the ROI with "Clear ROI" discards the OD.
 
 ---
 
-### 3. プリマップ作成
+### 2. Registration (drift correction)
 
-**手法**
+**Method**
 
-セグメンテーションの入力となる 2 次元マップを生成します
-（`muaxis.processing.premap`）。
+Sample drift during the energy sweep is corrected as a frame-to-frame
+translation (`muaxis.processing.registration.register_translation_stack`).
 
-- **正味吸収マップ**（`net_absorption_map`）: 画素ごとに、**プリエッジ範囲の OD 平均
-  （非共鳴の下地 ≒ 膜厚成分）を差し引いた後**、ポストエッジ範囲の各フレームを
-  **単純和**した値（オリジナルの `diff_sum` と同一。台形積分ではなくフレーム和なので
-  コントラストが一致します）。負の正味吸収（ノイズ・端の効果）は 0 にクリップします。
-  下地を引くことで膜厚依存が除去され、化学状態（共鳴吸収）のコントラストが残ります。
-  膜厚が違っても化学状態が同じ画素は同じクラスタにまとまるため、セグメンテーションの
-  入力として適しています。
-- **ピークマップ**（`peak_map`）: ポストエッジ範囲内で各画素が**最大強度を取る
-  エネルギー位置**を値とするマップ（強度の最大値ではなく、ピークの「位置」を符号化）。
-- **OD − pre-edge スタック**（`pre_edge_subtract`）: 各フレームからプリエッジ平均を
-  差し引き負値を 0 にクリップした 3 次元スタック。メインのレイヤーリストに
-  `OD - pre-edge (…)` として追加され、フレームスライダーでエネルギーごとに確認できます。
-  Segmentation の化学組成ベースのクラスタリング入力として、この保存済みスタックを
-  そのまま利用します（セッションにはプリエッジ範囲のみ保存し、復元時に再構成）。
-- 任意で **SVD/PCA 低ランク再構成による denoising** を前処理として適用できます
-  （下位主成分を捨ててノイズを低減。[SVD / PCA](#6-svd--pca多変量解析) と同じ分解を使用）。
+- **Phase correlation** (scikit-image `phase_cross_correlation`) estimates each
+  frame's subpixel shift relative to a reference frame. `upsample_factor` raises
+  the resolution.
+- The estimated shifts are applied with `scipy.ndimage.shift` (linear
+  interpolation; out-of-range filled with NaN).
+- Two **reference modes**:
+  - `Fixed`: always use one chosen frame as the reference.
+  - `Previous`: track sequentially against the previous corrected frame.
+- NaNs are filled with the frame median only during shift estimation; the
+  returned corrected stack keeps NaNs.
 
-**操作手順**
+**Operation**
 
-1. `Process ▸ Pre-map` を開く。
-2. プリエッジ範囲（Pre-edge start / end）とポストエッジ範囲（Post-edge start / end）を
-   吸収端を挟むように入力（既定はスキャンの先頭 1/5 をプリエッジ、残りをポストエッジ）。
-3. 必要なら denoising を有効化し、手法・主成分数を指定。
-4. 「Create net absorption + peak maps」を押す。
-5. `Net absorption map (…)`、`Peak map (…)`、`OD - pre-edge (…)` がレイヤーリストに
-   追加されます。2 次元マップはパレット・レベルを調整でき、`OD - pre-edge` は
-   フレームスライダーでエネルギーごとに表示できます。
+1. Open `Process ▸ Registration` (the OD stack is the input if OD has been
+   computed, otherwise the transmission stack).
+2. Set the reference mode (Fixed / Previous), reference-frame number, and
+   subpixel resolution (upsample factor, default 10).
+3. Press "Run registration" (runs on a separate thread). When it finishes, the
+   per-frame Shift X / Shift Y (px) appear in the table.
+4. **Preview the result** in the image view below: scroll through the registered
+   frames with the slider, and toggle **"Show original (compare)"** to compare
+   the input and corrected frames before committing.
+5. Press "Apply registered stack" when the result looks correct. It is reflected
+   in the main window, `Registered OD` (or `Registered transmission`) is added to
+   the layer list, **and the pre-map is (re)built automatically** from the
+   aligned stack with default energy ranges (see the next section).
 
----
-
-### 4. セグメンテーション
-
-**手法**
-
-入力マップを閾値処理し、連結領域（クラスタ）ごとに OD 平均スペクトルを求めます
-（`muaxis.processing.segmentation.segment_clusters`）。
-
-- **閾値マスク**: `low ≤ value ≤ high` を満たす有限画素を選択。
-- **クラスタ化**: 4 近傍連結（`scipy.ndimage.label`）でラベリング。
-- **最小サイズ**: 指定画素数未満のクラスタを除外し、残りを 1..N に振り直し。
-- **平均スペクトル**: 各クラスタ画素の OD をエネルギーごとに `nanmean` して算出。
-
-GUI では、閾値スライダに連動したヒストグラムとオーバーレイで選択領域を
-プレビューでき、クラスタごとに面積・「Good（良否）」フラグを管理、
-選択クラスタの平均スペクトル（および複数選択時はその平均）をプロットします。
-プロファイル正規化は `Min–max` / `None` / `Two energy values` から選べます。
-
-入力レイヤーとして正味吸収マップ・ピークマップのほか、単一エネルギーの画像を選べます:
-
-- **OD**: 生の OD 画像。
-- **OD − pre-edge**: 各フレームからプリエッジ平均（膜厚などの非共鳴の下地）を差し引き、
-  負値を 0 にクリップした画像（`max(OD − プリエッジ平均, 0)`、オリジナルと同一）。
-  化学組成でクラスタリングする場合はこちらが適切です
-  （プリエッジ範囲は Pre-map の設定を流用、未作成時は先頭数フレームを既定使用）。
-
-これらを選ぶと **OD energy スライダー**が現れ、どのエネルギーフレームでクラスタリングするかを
-選択できます（オリジナルと同じ操作方式）。なお、クラスタの平均スペクトル（プロファイル）は
-どの入力を選んでも常に**生 OD**から算出されます（オリジナルと同一）。
-
-**操作手順**
-
-1. 入力にしたいレイヤー（正味吸収マップ等）を選んだ状態で `Process ▸ Segmentation` を開く。
-   入力レイヤーの切り替えは上部の「Input layer」で行い、`OD` を選んだ場合は隣の
-   「OD energy」スライダーでエネルギーフレームを選択します。
-2. 上部の Lower / Upper スライダで閾値を調整（赤いオーバーレイと面積表示で確認）。
-3. 「Minimum size」で最小クラスタサイズ、必要なら入力レイヤーを切り替え。
-4. 「Run」を押すとクラスタ化が実行され、右の表にクラスタ一覧、下にクラスタ平均
-   OD スペクトルが表示されます。
-5. 表でクラスタを選択（複数選択可）すると、該当クラスタが強調表示され、複数選択時は
-   その平均スペクトル（Cluster 0）も描かれます。良否は「Good」列で管理し、
-   「Exclude bad data」で未良判定クラスタを除外表示できます。
-6. ラベルを付けて「Save」を押すと、選択プロファイル群がセグメンテーション結果として
-   メインウィンドウに保存され、スペクトルフィッティングの参照候補になります。
-
-> 閾値やレイヤーを変えて「Run」を押し直すたびに、新しいクラスタ集合で解析し直します
-> （前回の良否フィルタは新規実行時にリセットされます）。
+> Closing the window after Run without pressing Apply still keeps (and applies)
+> the computed registration.
 
 ---
 
-### 5. スペクトルフィッティング（R² RGBY）
+### 3. Pre-map generation
 
-**手法**
+**Method**
 
-各画素の OD スペクトルを参照スペクトル（セグメンテーションで保存した平均
-プロファイル等）と比較し、一致度を決定係数 R² で評価してカラーマップ化します
-（`muaxis.processing.fitting.spectral_r2_map`）。
+Generates the 2-D maps that feed segmentation (`muaxis.processing.premap`).
 
-- 参照は最大 4 本を R / G / B / Y チャンネルに割り当て。
-- 画素ごとに残差平方和と分散から標準的な決定係数
-  `R² = 1 − Σ(y−r)² / Σ(y−ȳ)²` を計算。
-- **R² floor** を下限として `[floor, 1]` を `[0, 1]` にクリップした重みを各チャンネルへ。
-  Y チャンネルは R・G に加算されて表示色（RGBA、プリマルチプライ済み）になります。
-- 任意で入力スタックにガウシアンぼかしを適用してから評価できます。
-- **正規化(Profile normalization)** は 4 種類。2〜4 は画素・参照の**両方**からプリエッジ
-  平均を差し引いてから(膜厚成分を除去)処理します（プリエッジ範囲は Pre-map の設定を流用）:
-  1. **Min–max**（既定）: 下地も振幅も規格化 → **形状のみ**で一致判定。
-  2. **Subtract pre-edge**: 下地は除去し**振幅（吸収の量）は保持** → **形状＋量**で判定する
-     半定量的マップ（同一物質でも濃度差を区別、背景ノイズに強い）。
-  3. **Subtract pre-edge + Absolute max**: プリエッジ差し引き後、絶対値の最大で規格化。
-  4. **Subtract pre-edge + max at energy**: プリエッジ差し引き後、**指定したエネルギー位置**で
-     値が 1 になるよう規格化（そのエネルギーで画素と参照を一致させる）。エネルギー位置は
-     隣のプルダウンで選択します。
+- **Net-absorption map** (`net_absorption_map`): per pixel, after **subtracting
+  the pre-edge OD average (the non-resonant baseline ≈ the thickness term)**,
+  the post-edge frames are **summed** (identical to the original `diff_sum`; a
+  per-frame sum, not a trapezoidal integral, so the contrast matches). Negative
+  net absorption (noise / edge effects) is clipped to 0. Removing the baseline
+  cancels the thickness dependence and leaves the chemical (resonant) contrast,
+  so pixels with the same chemistry but different thickness group into the same
+  cluster — the right input for segmentation.
+- **Peak map** (`peak_map`): the **energy position at which each pixel reaches
+  its maximum intensity** within the post-edge range (it encodes the peak
+  *position*, not the maximum intensity).
+- **OD − pre-edge stack** (`pre_edge_subtract`): a 3-D stack with the pre-edge
+  average subtracted from every frame and negatives clipped to 0. It is added to
+  the main layer list as `OD - pre-edge (…)` and can be inspected per energy.
+  Segmentation uses this stored stack directly as its composition-based
+  clustering input (the session stores only the pre-edge range and rebuilds the
+  stack on restore).
+- Optionally, **SVD/PCA low-rank reconstruction denoising** can be applied as a
+  pre-processing step (drops the lower principal components to reduce noise; uses
+  the same decomposition as [PCA + clustering / SVD](#6-pca--clustering--svd-multivariate-analysis)).
 
-**操作手順**
+**When it runs.** Applying a registration builds the pre-map automatically with
+default ranges (pre-edge = the first fifth of the scan, post-edge = the rest).
+**Open the Pre-map window only when you want to change those ranges** (or enable
+denoising); pressing its button re-creates the maps.
 
-1. 先にセグメンテーションで参照となる平均スペクトルを保存しておく。
-2. `Process ▸ Spectral fitting` を開く。
-3. R / G / B / Y の各チャンネルに、保存済みラベルとその中のプロファイル（クラスタ）を割り当て
-   （不要なチャンネルは「None」）。選択した参照スペクトルは上部にプレビュー表示されます。
-4. 正規化方式、R² floor、必要ならガウシアンぼかし（半径）を設定。量に敏感な半定量マップに
-   したい場合は正規化を「Subtract pre-edge」にします。特定エネルギーで揃えたい場合は
-   「Subtract pre-edge + max at energy」を選び、隣のプルダウンでエネルギー位置を指定します。
-5. 「Run」でマッピングを実行。下部に RGBY マップが表示されます。
-6. 「Save map」を押すとメインウィンドウのレイヤーリストに `Spectral fitting RGBY` が
-   追加され、中央画像に表示できます。
+**Operation (to modify)**
 
----
-
-### 6. SVD / PCA（多変量解析）
-
-**手法**
-
-スタック全体を主成分分解し、成分スペクトルとスコアマップ、低ランク再構成を得ます
-（`muaxis.processing.multivariate.decompose_stack`）。
-
-- データを `(energy, pixel)` 行列に整形し、平均を引いて中心化（NaN は平均で補完）。
-- 特異値分解（`numpy.linalg.svd`）で上位 k 成分を抽出。スコア＝`U·S`、
-  再構成＝`スコア · Vᵀ + 平均`、寄与率＝特異値² の比。
-- **リニアコンビネーションマップ**（`linear_combination_map`）: 各主成分スコアマップを
-  R / G / B ごとの係数で線形結合し、1–99 パーセンタイルでクリップ・規格化して
-  RGBA マップを作成します（`iterations` で平滑化を反復可能）。
-
-**操作手順**
-
-1. `Process ▸ SVD / PCA` を開く（プリマップの denoise 済みスタックがあればそれを、
-   なければ OD／透過スタックを入力）。
-2. 手法（PCA / SVD）、抽出する成分数、反復回数を設定。
-3. R / G / B 各チャンネルに対する PC1–PC3 の係数を設定（既定は PC1→R, PC2→G, PC3→B）。
-4. 「Run」を押すと別スレッドで分解が走り、進捗バーが進みます。完了後、上部に
-   成分スペクトル、下部にリニアコンビネーションマップが表示されます。
+1. Open `Process ▸ Pre-map`.
+2. Enter the pre-edge range (Pre-edge start / end) and post-edge range
+   (Post-edge start / end) so they bracket the absorption edge.
+3. Optionally enable denoising and set the method and number of components.
+4. Press "Create net absorption + peak maps".
+5. `Net absorption map (…)`, `Peak map (…)`, and `OD - pre-edge (…)` are added to
+   the layer list. The 2-D maps allow palette / level adjustment, and
+   `OD - pre-edge` can be shown per energy.
 
 ---
 
-## セッションの保存と復元
+### 4. Segmentation
 
-解析状態（OD の ROI、レジストレーション設定、プリマップ、セグメンテーション結果、
-フィッティング結果、表示中レイヤー・フレーム・正規化設定など）は、スキャンと同じ
-ディレクトリに **サイドカー `<stem>.muaxis.json`** として自動保存されます。
+**Method**
 
-- 次に同じスキャンを開くと、各プロセスを再計算してレイヤーを再構築し、直前の状態を
-  復元します。
-- アクティブレイヤーは**レイヤー名で保存・復元**されるため、上流プロセスの再構築状況で
-  レイヤーの並びが変わっても正しいレイヤーが選択されます（旧形式の位置インデックスも
-  後方互換として読み込み可能）。
-- `File ▸ Save session…` で任意の場所に明示的に保存することもできます。
+Thresholds the input map and computes an OD mean spectrum for each connected
+region (cluster) (`muaxis.processing.segmentation.segment_clusters`).
+
+- **Threshold mask**: selects finite pixels with `low ≤ value ≤ high`.
+- **Clustering**: 4-connectivity labelling (`scipy.ndimage.label`).
+- **Minimum size**: clusters below a pixel count are dropped and the rest
+  renumbered 1..N.
+- **Mean spectrum**: `nanmean` of the OD over each cluster's pixels per energy.
+
+The GUI previews the selected region with a histogram and overlay, tracks each
+cluster's area and a "Good" flag, and plots the mean spectrum of the selected
+clusters (and their average when several are selected). Profile normalization is
+`Min–max` / `None` / `Two energy values`.
+
+Besides the net-absorption and peak maps, single-energy images can be chosen as
+the input layer:
+
+- **OD**: the raw OD image.
+- **OD − pre-edge**: each frame with the pre-edge average (the non-resonant
+  baseline, e.g. thickness) subtracted and negatives clipped to 0
+  (`max(OD − pre-edge mean, 0)`, identical to the original). Prefer this for
+  composition-based clustering (the pre-edge range reuses the Pre-map setting, or
+  defaults to the first few frames if no pre-map exists).
+
+Choosing these shows an **OD energy slider** to pick which energy frame to
+cluster on. Note that the cluster mean spectra (profiles) are always computed
+from the **raw OD**, whatever input is chosen (identical to the original).
+
+**Setting thresholds.** There are no threshold sliders. Set the lower and upper
+thresholds either by **dragging on the histogram** — the threshold *nearer* the
+cursor moves to it — or by typing values into the two boxes labelled **Lower /
+Upper** next to the "Log Y" checkbox. Dragging updates the boxes and vice versa;
+the red overlay and the selected-area read-out update live.
+
+**Operation**
+
+1. With the layer you want as input selected, open `Process ▸ Segmentation`.
+   Switch the input with "Input layer" at the top; if you choose `OD`, pick the
+   energy frame with the adjacent "OD energy" slider.
+2. Set the thresholds by dragging the histogram or typing into the Lower / Upper
+   boxes (confirm with the red overlay and the area read-out).
+3. Set "Minimum size" for the smallest cluster, and switch the input layer if
+   needed.
+4. Press "Run" to cluster; the table on the right lists the clusters and the
+   plot below shows their mean OD spectra.
+5. Select clusters in the table (multi-select allowed) to highlight them; when
+   several are selected their average spectrum (Cluster 0) is also drawn. Use the
+   "Good" column and "Exclude bad data" to hide clusters judged poor.
+6. Enter a label and press "Save" to store the selected profiles as a
+   segmentation result in the main window; they become reference candidates for
+   spectral fitting.
+
+> Each time you press "Run" with new thresholds or a new layer, the clusters are
+> recomputed from scratch (the previous "Good" filter is reset on a new run).
 
 ---
 
-## プロジェクト構成
+### 5. PTEE(-R²) spectral fitting
+
+**Method**
+
+Peak-targeted endmember extraction with R² RGBY mapping: each pixel's OD spectrum
+is compared with reference spectra (e.g. the mean profiles saved in
+Segmentation), and the agreement is scored with the coefficient of determination
+R² and rendered as a colour map (`muaxis.processing.fitting.spectral_r2_map`).
+
+- Up to four references are assigned to the R / G / B / Y channels.
+- Per pixel, the standard coefficient of determination
+  `R² = 1 − Σ(y−r)² / Σ(y−ȳ)²` is computed from the residual and total sums of
+  squares (a fixed-reference R², which can be negative; it is not the squared
+  Pearson correlation of a fitted line).
+- An **R² floor** clips `[floor, 1]` to `[0, 1]` as each channel's weight. The Y
+  channel is added to R and G to form the displayed colour (premultiplied RGBA).
+- **Single-phase assignment** (checkbox): by default a pixel can show a blend of
+  channels (a mixture). Enable this to assign each pixel to the single
+  highest-R² reference (winner-take-all), so the map shows one phase per pixel; a
+  pixel whose best match is below the floor stays unassigned.
+- A Gaussian blur can optionally be applied to the input stack before scoring.
+- **Profile normalization** has four modes. Modes 2–4 first subtract the pre-edge
+  average from **both** pixel and reference (removing the thickness term; the
+  pre-edge range reuses the Pre-map setting):
+  1. **Min–max** (default): baseline and amplitude normalized → match on **shape
+     only**.
+  2. **Subtract pre-edge**: baseline removed, **amplitude (absorption amount)
+     kept** → a semi-quantitative map that matches on **shape + amount**
+     (distinguishes concentration even for the same material; robust to
+     background noise).
+  3. **Subtract pre-edge + Absolute max**: after pre-edge subtraction, scale by
+     the absolute maximum.
+  4. **Subtract pre-edge + max at energy**: after pre-edge subtraction, scale so
+     the value at a **chosen energy** equals 1 (matching pixel and reference at
+     that energy). The energy is chosen in the adjacent dropdown.
+
+**Operation**
+
+1. Save the reference mean spectra in Segmentation first.
+2. Open `Process ▸ PTEE(-R²)`.
+3. Assign a saved label and one of its profiles (clusters) to each of the R / G /
+   B / Y channels (set unused channels to "None"). The selected references are
+   previewed at the top.
+4. Set the normalization mode, R² floor, single-phase assignment if you want one
+   phase per pixel, and a Gaussian blur radius if needed.
+5. Press "Run" to map. The RGBY map appears at the bottom.
+6. Press "Save map" to add `PTEE RGBY map` to the main window's layer list.
+
+---
+
+### 6. PCA + clustering / SVD (multivariate analysis)
+
+**Method**
+
+Decomposes the whole stack into principal components, score maps, and a low-rank
+reconstruction (`muaxis.processing.multivariate.decompose_stack`).
+
+- The data is reshaped to an `(energy, pixel)` matrix and centered by subtracting
+  the mean (NaNs filled with the mean).
+- Singular value decomposition (`numpy.linalg.svd`) extracts the top k
+  components. Scores = `U·S`, reconstruction = `scores · Vᵀ + mean`, explained
+  variance = the ratio of singular values².
+- **Linear-combination map** (`linear_combination_map`): each PC score map is
+  combined with R / G / B coefficients, clipped and normalized over the 1–99th
+  percentiles into an RGBA map (`iterations` can repeat a smoothing pass).
+- A **PCA + k-means cluster map** can also be produced.
+
+**Operation**
+
+1. Open `Process ▸ PCA + clustering` (the input is the pre-map's denoised stack
+   if present, otherwise the OD / transmission stack).
+2. Set the method (PCA / SVD), the number of components, and iterations.
+3. Set the PC1–PC3 coefficients for each of the R / G / B channels (default
+   PC1→R, PC2→G, PC3→B).
+4. Press "Run": the decomposition runs on a separate thread with a progress bar.
+   When done, the component spectra appear at the top and the map at the bottom
+   (`SVD/PCA RGB map` or `PCA cluster map` in the layer list).
+
+---
+
+## Saving and restoring sessions
+
+Analysis state (the OD ROI, registration settings, pre-map, segmentation
+results, fitting results, the active layer / frame / normalization, etc.) is
+saved automatically as a **sidecar `<stem>.muaxis.json`** in the same directory
+as the scan.
+
+- The next time the same scan is opened, each process is recomputed to rebuild
+  the layers and the previous state is restored.
+- The active layer is **saved and restored by name**, so the correct layer is
+  selected even if the layer order shifts while upstream processes are rebuilt
+  (the old positional index is still read for backward compatibility).
+- `File ▸ Save session…` can also save explicitly to any location.
+
+---
+
+## Project layout
 
 ```
 src/muaxis/
 ├── io/
-│   └── stxm.py            # .hdr / .xim / i0.txt / drift.txt のリーダ（GUI 非依存）
-├── processing/            # 数値処理層（GUI 非依存）
+│   └── stxm.py            # reader for .hdr / .xim / i0.txt / drift.txt (GUI-independent)
+├── processing/            # numerical layer (GUI-independent)
 │   ├── absorbance.py      # OD = log(I0/I)
-│   ├── registration.py    # 位相相関によるドリフト補正
-│   ├── premap.py          # 正味吸収マップ・ピークマップ
-│   ├── segmentation.py    # 閾値クラスタリング＋クラスタ平均スペクトル
-│   ├── fitting.py         # 参照スペクトルとの R² RGBY マッピング
-│   └── multivariate.py    # SVD/PCA と リニアコンビネーションマップ
-├── gui/                   # PySide6 / pyqtgraph の各ウィンドウ
-│   ├── main_window.py     # データ・表示ハブ、レイヤー管理、セッション
+│   ├── registration.py    # phase-correlation drift correction
+│   ├── premap.py          # net-absorption / peak maps
+│   ├── segmentation.py    # threshold clustering + cluster mean spectra
+│   ├── fitting.py         # R² RGBY mapping against reference spectra (PTEE)
+│   └── multivariate.py    # SVD/PCA and linear-combination maps
+├── gui/                   # PySide6 / pyqtgraph windows
+│   ├── main_window.py     # data / display hub, layer management, sessions
 │   ├── od_window.py
 │   ├── registration_window.py
 │   ├── premap_window.py
 │   ├── segmentation_window.py
 │   ├── fitting_window.py
 │   └── multivariate_window.py
-└── __main__.py            # CLI エントリポイント（--inspect / --open）
+└── __main__.py            # CLI entry point (--inspect / --open)
 ```
 
-数値処理層はすべて Qt に依存しないため、次のようにスクリプトからも利用できます。
+The numerical layer has no Qt dependency, so it can also be used from scripts:
 
 ```python
 from muaxis.io.stxm import read_stxm_scan
