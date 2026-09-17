@@ -785,17 +785,23 @@ def _paper_figures(ph, maps, rows, speed, scaling):
     order = np.argsort([r["area_pct"] for r in minor_rows])
     xs = [minor_rows[i]["area_pct"] for i in order]
     fig, ax = plt.subplots(1, 2, figsize=(10.5, 4.4))
-    series = [("ptee", "o-", colors["ptee"], "PTEE-R2"),
-              ("cluster6", "P--", "#9467bd", "PCA + clustering (k = 6)"),
-              ("cluster12", "s:", "#c49be0", "PCA + clustering (k = 12)")]
-    for mth, mk, col, lab in series:
+    # Draw back-to-front so the largest error bars (k = 6) sit behind and never
+    # hide PTEE-R2, which is drawn last (on top).  k = 6 / k = 12 keep a common
+    # purple family but with enough contrast to tell apart.
+    series = [("cluster6", "P--", "#54278f", "PCA + clustering (k = 6)", 1),
+              ("cluster12", "s:", "#c994c7", "PCA + clustering (k = 12)", 2),
+              ("ptee", "o-", colors["ptee"], "PTEE-R2", 3)]
+    for mth, mk, col, lab, zo in series:
         ys = [minor_rows[i][f"{mth}_f1"] for i in order]
         es = [minor_rows[i].get(f"{mth}_f1_std", 0.0) for i in order]
-        ax[0].errorbar(xs, ys, yerr=es, fmt=mk, color=col, capsize=3, label=lab)
+        ax[0].errorbar(xs, ys, yerr=es, fmt=mk, color=col, capsize=3, label=lab,
+                       zorder=zo, elinewidth=1.2, alpha=0.95)
     ax[0].set_xscale("log"); ax[0].invert_xaxis()
     ax[0].set_xlabel("Phase area fraction (%)"); ax[0].set_ylabel("Detection F1")
     ax[0].set_title("(A) Minor-phase detection F1 vs area"); ax[0].set_ylim(-0.02, 1.02)
-    ax[0].legend(fontsize=8); ax[0].grid(alpha=0.3)
+    h, l = ax[0].get_legend_handles_labels()                 # show PTEE-R2 first
+    ax[0].legend([h[2], h[0], h[1]], [l[2], l[0], l[1]], fontsize=8)
+    ax[0].grid(alpha=0.3)
     px = [s["pixels"] for s in scaling]
     ax[1].plot(px, [s["ptee_s"] * 1e3 for s in scaling], "o-", color=colors["ptee"], label="PTEE")
     ax[1].plot(px, [s["cluster_s"] * 1e3 for s in scaling], "P--", color=colors["cluster"], label="PCA + clustering")
