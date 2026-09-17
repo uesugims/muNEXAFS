@@ -272,11 +272,10 @@ class MainWindow(QMainWindow):
             pen=pg.mkPen("#9e9e9e", width=2, style=Qt.PenStyle.DashLine), name="Whole-image mean"
         )
         self.whole_image_curve.setVisible(False)
-        # Clicking or dragging anywhere on the spectrum plot moves the energy
-        # cursor (the vertical bar) to that energy, selecting the frame — this
-        # replaces the frame slider.
+        # Clicking on the spectrum plot moves the energy cursor (the vertical
+        # bar) to that energy, selecting the frame.  Dragging the bar itself
+        # still moves it (the line is movable); this replaces the frame slider.
         self.spectrum_plot.scene().sigMouseClicked.connect(self._spectrum_mouse_clicked)
-        self.spectrum_plot.scene().sigMouseMoved.connect(self._spectrum_mouse_moved)
         layout.addWidget(self.spectrum_plot, stretch=1)
         self.setCentralWidget(central)
         self.image_view.ui.histogram.region.sigRegionChanged.connect(self._map_levels_changed)
@@ -461,16 +460,15 @@ class MainWindow(QMainWindow):
         self._select_frame(index)
 
     def _spectrum_mouse_clicked(self, event: object) -> None:
-        """Move the energy cursor to the clicked energy (frame selection)."""
+        """Move the energy cursor to the clicked energy (frame selection).
+
+        Only a single click jumps the bar; dragging the bar itself is handled by
+        the movable ``energy_line`` (as before), so there is no per-move-event
+        scrubbing to slow the plot down.
+        """
         try:
             scene_pos = event.scenePos()
         except AttributeError:
-            return
-        self._move_energy_cursor_to_scene(scene_pos)
-
-    def _spectrum_mouse_moved(self, scene_pos: object) -> None:
-        """Scrub the energy cursor while the left mouse button is held down."""
-        if not (QApplication.mouseButtons() & Qt.MouseButton.LeftButton):
             return
         self._move_energy_cursor_to_scene(scene_pos)
 
