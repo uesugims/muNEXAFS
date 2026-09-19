@@ -36,13 +36,16 @@ class Phantom:
 
 
 # area fraction and blob radius (px) per minor phase; index 0 is the matrix.
-# A geometric ladder of shrinking area exposes where each method breaks down.
+# A ladder of shrinking area exposes where each method breaks down.  minor2 uses
+# the same small blob size as minor3 so its variance contribution (blob size ×
+# contrast × area), not its area alone, is what the variance methods see; minor
+# 3-5 are spaced finely through the small-area regime where PTEE and PCA diverge.
 _MINOR_LAYOUT = [
-    dict(frac=0.045, r=(9, 16), n=10),    # minor1  ~4.5 %
-    dict(frac=0.018, r=(6, 11), n=10),    # minor2  ~1.8 %
-    dict(frac=0.007, r=(4, 7), n=14),     # minor3  ~0.7 %
-    dict(frac=0.0025, r=(2, 4), n=22),    # minor4  ~0.25 %
-    dict(frac=0.0010, r=(2, 3), n=30),    # minor5  ~0.1 %  (tiniest: hardest)
+    dict(frac=0.045,  r=(9, 16), n=10),   # minor1  ~4.5 %
+    dict(frac=0.018,  r=(4, 7),  n=14),   # minor2  ~1.8 %  (blob size = minor3's)
+    dict(frac=0.0055, r=(4, 7),  n=14),   # minor3  ~0.55 %
+    dict(frac=0.0032, r=(3, 5),  n=22),   # minor4  ~0.32 %
+    dict(frac=0.0018, r=(2, 3),  n=30),   # minor5  ~0.18 %  (tiniest: hardest)
 ]
 
 
