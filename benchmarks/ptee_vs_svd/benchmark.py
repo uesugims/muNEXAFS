@@ -252,19 +252,32 @@ def supervised_maps(od, refs):
 CLUSTER_K = (6, 12)          # k values scanned for the PCA+k-means workflow
 
 
-def _kmeans_labels(feats, k_values=CLUSTER_K):
-    """k-means labelings of PCA score features (one per k)."""
+def _kmeans_labels(feats, k_values=CLUSTER_K, n_init=10, iters=300):
+    """Converged k-means labelings of PCA score features (one per k).
+
+    ``kmeans2`` defaults to ``iter=10`` with a single initialization and no
+    convergence test, which leaves the small, low-variance phases un-clustered
+    and makes the variance baseline look far worse than it is.  Run to
+    convergence (``iter=iters``) and keep the lowest-inertia of ``n_init``
+    ``k-means++`` restarts, so the comparison against a properly-run variance
+    workflow is fair.
+    """
     from scipy.cluster.vq import kmeans2
     f = np.nan_to_num(np.asarray(feats, float))
     std = f.std(0, keepdims=True); std[std == 0] = 1.0
     fz = f / std
     labelings = []
     for k in k_values:
-        try:
-            _, lab = kmeans2(fz, k, seed=0, minit="++", missing="warn")
-        except Exception:
-            _, lab = kmeans2(fz, k, seed=0, minit="random")
-        labelings.append(lab)
+        best_lab, best_inertia = None, np.inf
+        for init in range(n_init):
+            try:
+                cen, lab = kmeans2(fz, k, seed=init, minit="++", iter=iters, missing="warn")
+            except Exception:
+                cen, lab = kmeans2(fz, k, seed=init, minit="random", iter=iters)
+            inertia = float(((fz - cen[lab]) ** 2).sum())
+            if inertia < best_inertia:
+                best_inertia, best_lab = inertia, lab
+        labelings.append(best_lab)
     return labelings
 
 
@@ -582,7 +595,10 @@ def main() -> int:
 
     def cluster_workflow(cube):
         feats = decompose_stack(cube, min(nclust, cube.shape[0]), "PCA").scores
-        _kmeans_labels(feats)            # PCA + k-means (the realistic workflow cost)
+        # Time a single converged k-means at one k (the minimal converged cost).
+        # A robust analysis uses n_init restarts, which multiplies this; the
+        # reported figure is therefore a lower bound on the variance-route cost.
+        _kmeans_labels(feats, k_values=(12,), n_init=1)
 
     speed = dict(
         ptee_s=median_time(lambda: ptee_r2_maps(ph.od, refs, "Min–max")),
