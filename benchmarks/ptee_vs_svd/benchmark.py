@@ -482,10 +482,16 @@ METHODS = ("ptee", "sam", "lcf", "pca", "svd", "cluster")
 SUPERVISED = ("ptee", "sam", "lcf")
 METHOD_LABEL = dict(ptee="PTEE", sam="SAM", lcf="LCF", pca="PCA", svd="SVD",
                     cluster="PCA+cluster")
+# Classifier comparison on the SAME PTEE-extracted endmembers, each an exclusive
+# argmax assignment (the fair, apples-to-apples way to compare matching rules):
+# R² is ``ptee``; SAM and LCF reuse those endmembers.  ``oracle_r2`` gives R²
+# the true spectra, isolating the extraction error from the classifier.
+EXTRACTED_CLASSIFIERS = ("ptee_sam", "ptee_lcf", "oracle_r2")
+METHOD_LABEL.update(ptee_sam="PTEE+SAM", ptee_lcf="PTEE+LCF", oracle_r2="R² (true refs)")
 # PCA+cluster reported at each cluster count k separately (both are shown, rather
 # than keeping the best), so the reader sees the k-sensitivity directly.
 CLUSTER_METHODS = tuple(f"cluster{k}" for k in CLUSTER_K)     # ("cluster6", "cluster12")
-METHODS_EVAL = METHODS + CLUSTER_METHODS
+METHODS_EVAL = METHODS + EXTRACTED_CLASSIFIERS + CLUSTER_METHODS
 for _k in CLUSTER_K:
     METHOD_LABEL[f"cluster{_k}"] = f"PCA k={_k}"
 N_CLUSTER_COMP = 10          # PCA components fed to k-means (generous to clustering)
@@ -505,9 +511,19 @@ def detect(ph, refs, ncomp, size):
     # highest R² (argmax, no threshold and no ground truth), exactly the
     # single-phase assignment described for the method.  Each phase's map is its
     # membership in that partition.
-    _ptee_scores = ptee_r2_maps(ph.od, extracted_refs_by_phase(ph), "Min–max")
-    _ptee_label = np.argmax(np.where(np.isfinite(_ptee_scores), _ptee_scores, -np.inf), axis=0)
-    sup["ptee"] = np.stack([(_ptee_label == p).astype(float) for p in range(len(ph.names))])
+    P = len(ph.names)
+    extracted = extracted_refs_by_phase(ph)
+
+    def _argmax_stack(scoremaps):
+        lab = np.argmax(np.where(np.isfinite(scoremaps), scoremaps, -np.inf), axis=0)
+        return np.stack([(lab == p).astype(float) for p in range(P)])
+
+    sup["ptee"] = _argmax_stack(ptee_r2_maps(ph.od, extracted, "Min–max"))
+    # Same extracted endmembers, different matching rule (fair classifier test):
+    sup["ptee_sam"] = _argmax_stack(sam_corr_maps(ph.od, extracted))
+    sup["ptee_lcf"] = _argmax_stack(lcf_frac_maps(ph.od, extracted))
+    # R² with the *true* endmembers: the extraction-free ceiling.
+    sup["oracle_r2"] = _argmax_stack(ptee_r2_maps(ph.od, ph.endmembers, "Min–max"))
     pca = decompose_stack(ph.od, ncomp, "PCA")
     svd = decompose_stack(ph.od, ncomp, "SVD (uncentered)")
     pca_s = pca.scores.reshape(size, size, ncomp)
@@ -523,13 +539,15 @@ def detect(ph, refs, ncomp, size):
         sk, smap = pca_detection(svd_s, ph.masks[p])
         phase_maps = dict(ptee=sup["ptee"][p], sam=sup["sam"][p], lcf=sup["lcf"][p],
                           pca=pmap, svd=smap, cluster=cluster_maps[p])
+        for m in EXTRACTED_CLASSIFIERS:
+            phase_maps[m] = sup[m][p]
         for k in CLUSTER_K:
             phase_maps[f"cluster{k}"] = cluster_k_maps[k][p]
         row = dict(phase=name, area_pct=100 * float(ph.area_fraction[p]),
                    pca_comp=pk, svd_comp=sk)
         for m in METHODS_EVAL:
             f1, area, rec, prec = score_metrics(phase_maps[m], ph.masks[p],
-                                                binary=(m == "ptee" or m.startswith("cluster")))
+                                                binary=(m in ("ptee",) + EXTRACTED_CLASSIFIERS or m.startswith("cluster")))
             row[f"{m}_f1"] = f1
             row[f"{m}_area"] = 100 * area
             row[f"{m}_recall"] = 100 * rec
