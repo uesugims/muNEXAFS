@@ -31,7 +31,8 @@ class FittingWindow(QMainWindow):
         # reference are made to agree at that energy.  Shown only for mode 4.
         self.norm_energy_label=QLabel("Normalize at"); right.addWidget(self.norm_energy_label); self.norm_energy=QComboBox(); self.norm_energy.addItems([f"{e:.4g} eV" for e in self.energies_eV]); self.norm_energy.setCurrentIndex(len(self.energies_eV)-1); self.norm_energy.currentIndexChanged.connect(self._plot_refs); right.addWidget(self.norm_energy)
         self.norm_energy_label.setVisible(False); self.norm_energy.setVisible(False)
-        right.addWidget(QLabel("R² floor")); self.floor=QDoubleSpinBox(); self.floor.setRange(-1,1); self.floor.setSingleStep(.01); self.floor.setValue(.9); right.addWidget(self.floor)
+        right.addWidget(QLabel("Classifier")); self.classifier=QComboBox(); self.classifier.addItems(["R² (fixed reference)", "SAM (spectral angle)", "LCF (non-negative fit)"]); self.classifier.setToolTip("Per-pixel matching rule against the reference spectra.\nR² is the lightest and default; SAM and LCF reduce over-detection of very faint phases.\nLCF scores are fractional abundances, so lower the score floor when using it."); right.addWidget(self.classifier)
+        right.addWidget(QLabel("Score floor")); self.floor=QDoubleSpinBox(); self.floor.setRange(-1,1); self.floor.setSingleStep(.01); self.floor.setValue(.9); right.addWidget(self.floor)
         self.single_phase_check=QCheckBox("Single-phase assignment"); self.single_phase_check.setChecked(False); self.single_phase_check.setToolTip("Assign each pixel to the single highest-R² phase (winner-take-all) instead of a blended mixture."); right.addWidget(self.single_phase_check)
         self.blur_check=QCheckBox("Gaussian blur"); self.blur_check.setChecked(True); right.addWidget(self.blur_check); blur_row=QHBoxLayout(); blur_row.addWidget(QLabel("Radius")); self.blur_radius=QLineEdit("0.7"); self.blur_radius.setMaximumWidth(70); blur_row.addWidget(self.blur_radius); right.addLayout(blur_row)
         self.run=QPushButton("Run"); self.run.clicked.connect(self.run_fit); right.addWidget(self.run); self.save=QPushButton("Save map"); self.save.setEnabled(False); self.save.clicked.connect(self.save_map); right.addWidget(self.save); right.addStretch(1)
@@ -113,9 +114,11 @@ class FittingWindow(QMainWindow):
         try: radius=max(0.0,float(self.blur_radius.text()))
         except ValueError: radius=2.0
         if self.blur_check.isChecked() and radius > 0: data=gaussian_filter(data,sigma=(0,radius,radius))
+        classifier = ("R2", "SAM", "LCF")[self.classifier.currentIndex()]
         parameters = {
             "input_source": self.input_source,
             "profile_normalization": self.norm.currentText(),
+            "classifier": classifier,
             "r2_floor": self.floor.value(),
             "single_phase_assignment": self.single_phase_check.isChecked(),
             "gaussian_blur": self.blur_check.isChecked(),
@@ -133,10 +136,10 @@ class FittingWindow(QMainWindow):
             parameters["normalization_energy_eV"] = float(self.energies_eV[self._norm_energy_index()])
         self.result = replace(
             spectral_r2_map(data, self.energies_eV, refs, normalization=norm, r2_floor=self.floor.value(),
-                            single_phase=self.single_phase_check.isChecked()),
+                            classifier=classifier, single_phase=self.single_phase_check.isChecked()),
             raw_references=raw_refs, analysis_parameters=parameters,
         )
-        self.map.setImage(self.result.rgb_y,autoLevels=False,autoRange=True); self.status.setText("R² RGBY map ready"); self.save.setEnabled(True); self.resultReady.emit(self.result)
+        self.map.setImage(self.result.rgb_y,autoLevels=False,autoRange=True); self.status.setText(f"{classifier} RGBY map ready"); self.save.setEnabled(True); self.resultReady.emit(self.result)
 
     def save_map(self):
         if self.result is not None:

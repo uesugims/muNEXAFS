@@ -50,6 +50,35 @@ class SinglePhaseAssignmentTests(unittest.TestCase):
         self.assertEqual(red[1], 0.0)
         self.assertEqual(red[2], 0.0)
 
+    def test_default_classifier_matches_explicit_r2(self):
+        a = spectral_r2_map(self.stack, self.E, self.refs, r2_floor=0.0)
+        b = spectral_r2_map(self.stack, self.E, self.refs, r2_floor=0.0, classifier="R2")
+        np.testing.assert_array_equal(np.nan_to_num(a.r2), np.nan_to_num(b.r2))
+
+    def test_sam_classifier_assigns_pure_pixel_to_its_channel(self):
+        res = spectral_r2_map(self.stack, self.E, self.refs, r2_floor=0.0,
+                              classifier="SAM", single_phase=True)
+        red = res.rgb_y[0, 0]  # column 0 -> ref 0 -> red only
+        self.assertGreater(red[0], 0.0)
+        self.assertEqual(red[1], 0.0)
+        self.assertEqual(red[2], 0.0)
+
+    def test_lcf_classifier_gives_fractional_abundances_summing_to_one(self):
+        res = spectral_r2_map(self.stack, self.E, self.refs, r2_floor=0.0, classifier="LCF")
+        # Pure ref-0 pixel (column 0): abundance concentrated on ref 0.
+        self.assertGreater(res.r2[0, 0, 0], 0.9)
+        # Blended pixel (column 3 = ref0 + ref1): both fractions positive.
+        self.assertGreater(res.r2[0, 0, 3], 0.1)
+        self.assertGreater(res.r2[1, 0, 3], 0.1)
+
+    def test_lcf_single_phase_assigns_pure_pixel_to_its_channel(self):
+        res = spectral_r2_map(self.stack, self.E, self.refs, r2_floor=0.0,
+                              classifier="LCF", single_phase=True)
+        red = res.rgb_y[0, 0]
+        self.assertGreater(red[0], 0.0)
+        self.assertEqual(red[1], 0.0)
+        self.assertEqual(red[2], 0.0)
+
 
 if __name__ == "__main__":
     unittest.main()

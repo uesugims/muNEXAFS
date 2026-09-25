@@ -22,7 +22,7 @@ def _normalize(a: NDArray[np.float64], mode: str) -> NDArray[np.float64]:
     # Area-normalized spectra are useful when absolute OD should be removed.
     return np.divide(a, np.nanmax(np.abs(a), axis=-1, keepdims=True), out=np.zeros_like(a), where=np.nanmax(np.abs(a), axis=-1, keepdims=True) != 0)
 
-def spectral_r2_map(od_stack: NDArray[np.float64], energies_eV: NDArray[np.float64], references: NDArray[np.float64], reference_energies: NDArray[np.float64] | None = None, *, normalization: str = "Min–max", r2_floor: float = 0.9, single_phase: bool = False) -> SpectralFitResult:
+def spectral_r2_map(od_stack: NDArray[np.float64], energies_eV: NDArray[np.float64], references: NDArray[np.float64], reference_energies: NDArray[np.float64] | None = None, *, normalization: str = "Min–max", r2_floor: float = 0.9, classifier: str = "R2", single_phase: bool = False) -> SpectralFitResult:
     od = np.asarray(od_stack, float); refs = np.asarray(references, float)
     if od.ndim != 3 or refs.ndim != 2 or refs.shape[0] not in (3, 4): raise ValueError("od_stack=(energy,y,x), references=(3 or 4,energy)")
     e = np.asarray(energies_eV, float)
@@ -37,15 +37,40 @@ def spectral_r2_map(od_stack: NDArray[np.float64], energies_eV: NDArray[np.float
     r = _normalize(safe_refs, normalization)
     valid = np.isfinite(y).all(axis=1)
     scores = np.full((refs.shape[0], y.shape[0]), np.nan)
-    # Standard coefficient of determination: compare residual variance with
-    # the variance of the measured spectrum at each pixel.
-    denom = np.sum((y-y.mean(axis=1, keepdims=True))**2, axis=1)
-    for i in range(refs.shape[0]):
-        if not active_refs[i]:
-            continue
-        residual = np.sum((y-r[i])**2, axis=1)
-        ratio = np.divide(residual[valid], denom[valid], out=np.zeros_like(residual[valid]), where=denom[valid] > 0)
-        scores[i, valid] = np.where(denom[valid] > 0, 1.0 - ratio, 0.0)
+    # Each pixel is scored against every active reference; the score's meaning
+    # depends on the classifier (all: higher = better match, so the floor,
+    # single-phase argmax and RGBY logic below are shared):
+    #   R2  – coefficient of determination (default): residual vs pixel variance.
+    #   SAM – spectral-angle mapper: cosine similarity after mean removal.
+    #   LCF – non-negative linear-combination fit: fractional abundance of the
+    #         reference (fast OLS + clip, not per-pixel NNLS).
+    if classifier == "SAM":
+        yc = y - y.mean(axis=1, keepdims=True)
+        yn = np.linalg.norm(np.nan_to_num(yc), axis=1)
+        for i in range(refs.shape[0]):
+            if not active_refs[i]:
+                continue
+            rc = r[i] - r[i].mean(); rn = float(np.linalg.norm(rc))
+            num = np.nan_to_num(yc) @ rc
+            cos = np.divide(num, yn * rn, out=np.zeros_like(num), where=(yn * rn) > 0)
+            scores[i, valid] = cos[valid]
+    elif classifier == "LCF":
+        act = np.flatnonzero(active_refs)
+        if act.size:
+            A = r[act].T                                             # (energy, n_active)
+            sol, *_ = np.linalg.lstsq(A, np.nan_to_num(y[valid].T), rcond=None)  # (n_active, npix)
+            sol = np.clip(sol, 0.0, None)
+            frac = sol / np.clip(sol.sum(axis=0, keepdims=True), 1e-12, None)
+            for j, i in enumerate(act):
+                scores[i, valid] = frac[j]
+    else:  # "R2"
+        denom = np.sum((y-y.mean(axis=1, keepdims=True))**2, axis=1)
+        for i in range(refs.shape[0]):
+            if not active_refs[i]:
+                continue
+            residual = np.sum((y-r[i])**2, axis=1)
+            ratio = np.divide(residual[valid], denom[valid], out=np.zeros_like(residual[valid]), where=denom[valid] > 0)
+            scores[i, valid] = np.where(denom[valid] > 0, 1.0 - ratio, 0.0)
     scores = scores.reshape((refs.shape[0],) + od.shape[1:])
     weights = np.clip((scores-r2_floor) / max(1e-12, 1-r2_floor), 0, 1)
     weights[~np.isfinite(weights)] = 0.0
