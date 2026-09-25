@@ -337,12 +337,19 @@ R² and rendered as a colour map (`muaxis.processing.fitting.spectral_r2_map`).
   `R² = 1 − Σ(y−r)² / Σ(y−ȳ)²` is computed from the residual and total sums of
   squares (a fixed-reference R², which can be negative; it is not the squared
   Pearson correlation of a fitted line).
-- An **R² floor** clips `[floor, 1]` to `[0, 1]` as each channel's weight. The Y
+- **Classifier** (combo): the per-pixel matching rule against the references.
+  `R²` (default, above) is the lightest and most interpretable; `SAM` scores by
+  spectral-angle cosine similarity; `LCF` by non-negative linear-combination
+  fractional abundance (a fast OLS + clip approximation). SAM and LCF reduce the
+  over-detection of very faint phases; because LCF scores are fractional
+  abundances, lower the score floor when using it. R², SAM and LCF share the
+  floor, single-phase and RGBY logic (higher score = better match).
+- A **score floor** clips `[floor, 1]` to `[0, 1]` as each channel's weight. The Y
   channel is added to R and G to form the displayed colour (premultiplied RGBA).
 - **Single-phase assignment** (checkbox): by default a pixel can show a blend of
   channels (a mixture). Enable this to assign each pixel to the single
-  highest-R² reference (winner-take-all), so the map shows one phase per pixel; a
-  pixel whose best match is below the floor stays unassigned.
+  highest-scoring reference (winner-take-all), so the map shows one phase per
+  pixel; a pixel whose best match is below the floor stays unassigned.
 - A Gaussian blur can optionally be applied to the input stack before scoring.
 - **Profile normalization** has four modes. Modes 2–4 first subtract the pre-edge
   average from **both** pixel and reference (removing the thickness term; the
@@ -366,8 +373,9 @@ R² and rendered as a colour map (`muaxis.processing.fitting.spectral_r2_map`).
 3. Assign a saved label and one of its profiles (clusters) to each of the R / G /
    B / Y channels (set unused channels to "None"). The selected references are
    previewed at the top.
-4. Set the normalization mode, R² floor, single-phase assignment if you want one
-   phase per pixel, and a Gaussian blur radius if needed.
+4. Choose the classifier (R² / SAM / LCF), normalization mode, score floor,
+   single-phase assignment if you want one phase per pixel, and a Gaussian blur
+   radius if needed.
 5. Press "Run" to map. The RGBY map appears at the bottom.
 6. Press "Save map" to add `PTEE RGBY map` to the main window's layer list.
 
