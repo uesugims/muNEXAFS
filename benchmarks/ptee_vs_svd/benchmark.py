@@ -242,9 +242,26 @@ def lcf_frac_maps(od, refs):
     return out.reshape(len(refs), y, x)
 
 
+NORM_ENERGY = 291.5          # upper-limit normalization energy (paper Section 3.3)
+
+
+def paper_normalize(a, energies, e_norm=NORM_ENERGY, n_pre=3):
+    """Normalization of the paper (Section 3.3): subtract the pre-edge (mean of
+    the first ``n_pre`` energies), clip at zero, then divide by the value at
+    ``e_norm``.  ``a`` is an (E, Y, X) cube or a (P, E) set of spectra."""
+    a = np.asarray(a, float)
+    cube = a.ndim == 3
+    m = a.reshape(a.shape[0], -1) if cube else a.T            # (E, N)
+    m = np.clip(m - np.nanmean(m[:n_pre], axis=0, keepdims=True), 0.0, None)
+    d = m[int(np.argmin(np.abs(np.asarray(energies) - e_norm)))]
+    m = np.divide(m, d, out=np.full_like(m, np.nan), where=d > 0)
+    return m.reshape(a.shape) if cube else m.T
+
+
 def supervised_maps(od, refs):
-    """All supervised detectors that receive the same known reference spectra."""
-    return dict(ptee=ptee_r2_maps(od, refs, "Min–max"),
+    """All supervised detectors that receive the same known reference spectra
+    (``od`` and ``refs`` already normalized with ``paper_normalize``)."""
+    return dict(ptee=ptee_r2_maps(od, refs, "None"),
                 sam=sam_corr_maps(od, refs),
                 lcf=lcf_frac_maps(od, refs))
 
@@ -504,7 +521,11 @@ def detect(ph, refs, ncomp, size):
     non-negative abundance.  Unsupervised: PCA/SVD oracle best component, and the
     realistic PCA→k-means cluster workflow (oracle best cluster per phase).
     """
-    sup = supervised_maps(ph.od, refs)
+    # Classifiers see the paper's normalization (pre-edge + 291.5 eV); the PCA
+    # routes below work on OD, as in the standard (MANTiS) workflow.
+    odn = paper_normalize(ph.od, ph.energies)
+    norm = lambda r: paper_normalize(r, ph.energies)
+    sup = supervised_maps(odn, norm(refs))
     # PTEE is evaluated as the FULL pipeline: extract endmembers from the noisy
     # image (no known spectra, no masks), then R² classify with them.
     # PTEE detection is an EXCLUSIVE assignment: each pixel goes to the phase of
@@ -518,12 +539,13 @@ def detect(ph, refs, ncomp, size):
         lab = np.argmax(np.where(np.isfinite(scoremaps), scoremaps, -np.inf), axis=0)
         return np.stack([(lab == p).astype(float) for p in range(P)])
 
-    sup["ptee"] = _argmax_stack(ptee_r2_maps(ph.od, extracted, "Min–max"))
+    ext_n = norm(extracted)
+    sup["ptee"] = _argmax_stack(ptee_r2_maps(odn, ext_n, "None"))
     # Same extracted endmembers, different matching rule (fair classifier test):
-    sup["ptee_sam"] = _argmax_stack(sam_corr_maps(ph.od, extracted))
-    sup["ptee_lcf"] = _argmax_stack(lcf_frac_maps(ph.od, extracted))
+    sup["ptee_sam"] = _argmax_stack(sam_corr_maps(odn, ext_n))
+    sup["ptee_lcf"] = _argmax_stack(lcf_frac_maps(odn, np.nan_to_num(ext_n)))
     # R² with the *true* endmembers: the extraction-free ceiling.
-    sup["oracle_r2"] = _argmax_stack(ptee_r2_maps(ph.od, ph.endmembers, "Min–max"))
+    sup["oracle_r2"] = _argmax_stack(ptee_r2_maps(odn, norm(ph.endmembers), "None"))
     pca = decompose_stack(ph.od, ncomp, "PCA")
     svd = decompose_stack(ph.od, ncomp, "SVD (uncentered)")
     pca_s = pca.scores.reshape(size, size, ncomp)
@@ -582,6 +604,7 @@ def main() -> int:
     P = len(per_seed[0]["ph"].names)
     ph = per_seed[0]["ph"]
     refs = references_for(ph, args.seedref, np.random.default_rng(args.seed))
+    refs_n = paper_normalize(refs, ph.energies)   # timing: classifiers on paper normalization
     fidelity = _validate_against_gui(ph.od, ph.endmembers)
 
     # Representative realization for figures: the one whose PCA+cluster
@@ -619,9 +642,9 @@ def main() -> int:
         _kmeans_labels(feats, k_values=(12,), n_init=1)
 
     speed = dict(
-        ptee_s=median_time(lambda: ptee_r2_maps(ph.od, refs, "Min–max")),
-        sam_s=median_time(lambda: sam_corr_maps(ph.od, refs)),
-        lcf_s=median_time(lambda: lcf_frac_maps(ph.od, refs)),
+        ptee_s=median_time(lambda: ptee_r2_maps(paper_normalize(ph.od, ph.energies), refs_n, "None")),
+        sam_s=median_time(lambda: sam_corr_maps(paper_normalize(ph.od, ph.energies), refs_n)),
+        lcf_s=median_time(lambda: lcf_frac_maps(paper_normalize(ph.od, ph.energies), refs_n)),
         pca_s=median_time(lambda: decompose_stack(ph.od, ncomp, "PCA")),
         svd_s=median_time(lambda: decompose_stack(ph.od, ncomp, "SVD (uncentered)")),
         cluster_s=median_time(lambda: cluster_workflow(ph.od), 3),
@@ -633,9 +656,9 @@ def main() -> int:
         sub = ph.od[:, :s, :s]
         scaling.append(dict(
             pixels=s * s,
-            ptee_s=median_time(lambda: ptee_r2_maps(sub, refs, "Min–max"), 3),
-            sam_s=median_time(lambda: sam_corr_maps(sub, refs), 3),
-            lcf_s=median_time(lambda: lcf_frac_maps(sub, refs), 3),
+            ptee_s=median_time(lambda: ptee_r2_maps(paper_normalize(sub, ph.energies), refs_n, "None"), 3),
+            sam_s=median_time(lambda: sam_corr_maps(paper_normalize(sub, ph.energies), refs_n), 3),
+            lcf_s=median_time(lambda: lcf_frac_maps(paper_normalize(sub, ph.energies), refs_n), 3),
             pca_s=median_time(lambda: decompose_stack(sub, ncomp, "PCA"), 3),
             cluster_s=median_time(lambda: cluster_workflow(sub), 3),
         ))

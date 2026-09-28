@@ -6,8 +6,8 @@ For a controlled method comparison the endmembers must be spectrally *distinct*
 share a common absorption-edge continuum but each carry a sharp pi* resonance at
 a unique energy — the standard, unambiguous phantom design.
 
-The energy grid (and, if reachable, its exact values) comes from the real UVSOR
-scan so the axis and sampling are realistic; only the peak positions are chosen.
+The spectra are sampled on the measured energy grid of the paper (109 points:
+0.5 eV steps to 283.5 eV, 0.1 eV to 292 eV, 0.5 eV to 300 eV).
 Run ``extract_endmembers.py`` instead to use spectra taken straight from data.
 """
 from __future__ import annotations
@@ -17,7 +17,6 @@ from pathlib import Path
 
 import numpy as np
 
-REAL_HDR = "/Volumes/Extreme Pro/stxm/UVSOR/211123/UV_211123007/UV_211123007.hdr"
 # (peak center eV, width eV, peak OD height); index 0 is the matrix.
 _PHASES = [
     ("matrix", 285.1, 0.9, 0.6),
@@ -30,12 +29,10 @@ _PHASES = [
 
 
 def _energies() -> np.ndarray:
-    try:
-        sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "src"))
-        from muaxis.io.stxm import read_header
-        return np.asarray(read_header(REAL_HDR).stack_axis_energy_eV, float)
-    except Exception:
-        return np.linspace(280.0, 299.8, 114)
+    # The measured energy grid of the paper (Section 2.1; 109 points).
+    sys.path.insert(0, str(Path(__file__).resolve().parent))
+    from phantom import MEASURED_ENERGIES
+    return np.asarray(MEASURED_ENERGIES, float)
 
 
 def main() -> int:

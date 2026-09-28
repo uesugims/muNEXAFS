@@ -31,7 +31,7 @@ Options:
 
 ```
 --size N     phantom edge length in px (default 320; larger = clearer speed gap)
---i0 C       photon budget (counts); lower = noisier (default 300)
+--i0 C       photon budget (counts); lower = noisier (default 350)
 --ncomp K    SVD/PCA components an analyst keeps (default 3, the GUI default)
 --seeds N    phantom realizations to average over (default 3, mean ± std)
 --seed S     base RNG seed (default 0)
@@ -50,11 +50,17 @@ times are only meaningful with that context.
 
 - **Phantom** (`phantom.py`): a large OD cube built from endmember spectra with
   known ground-truth phase locations — one dominant matrix phase plus several
-  **minor phases of shrinking area** (≈5 % → 0.1 %). A smooth thickness/density
-  field multiplies every pixel (so total absorption ≠ composition), and Poisson
-  photon noise is applied at the transmission level.
+  **minor phases of shrinking area** (≈5 % → 0.1 %), sampled on the measured
+  energy grid of the paper (109 points, 280–300 eV, incl. 291.5 eV). Each
+  endmember is a shared sigmoid edge plus one Gaussian π* peak at its own energy
+  (`make_endmembers.py`), i.e. the favourable case in which the peak map
+  separates every phase. A smooth thickness/density field (0.6–1.4×, s.d. 0.15;
+  `thickness_sd`) multiplies every pixel (so total absorption ≠ composition), and
+  Poisson photon noise (I0 = 350 counts) is applied at the transmission level.
+  Ground truth: abundance ≥ 0.5 × `minor_level`.
 - **Supervised methods (same known spectra)** — the fair comparison:
-  - **PTEE**: per-pixel min–max R² (`spectral_r2_map`); the benchmark's
+  - **PTEE**: per-pixel R² after the paper's normalization (pre-edge
+    subtraction + normalization at 291.5 eV, `paper_normalize`); the benchmark's
     `ptee_r2_maps` reproduces that math for any number of references and is
     checked against the GUI function.
   - **SAM**: spectral-angle mapper (`sam_corr_maps`) — correlation of each pixel

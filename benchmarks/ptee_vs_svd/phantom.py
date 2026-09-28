@@ -60,29 +60,51 @@ def _disk_field(shape, rng, n, r_range, target_frac):
     return field
 
 
-def load_endmembers(path: str | Path | None = None):
+# Energy grid of the measured stacks (paper Section 2.1): 280-283.5 eV in 0.5 eV
+# steps, 283.6-292 eV in 0.1 eV steps, 292.5-300 eV in 0.5 eV steps (109 points,
+# including the 291.5 eV normalization energy).
+MEASURED_ENERGIES = np.round(np.concatenate([
+    np.arange(280.0, 283.5 + 1e-9, 0.5),
+    np.arange(283.6, 292.0 + 1e-9, 0.1),
+    np.arange(292.5, 300.0 + 1e-9, 0.5),
+]), 2)
+
+
+def load_endmembers(path: str | Path | None = None, energies: np.ndarray | None = MEASURED_ENERGIES):
+    """Endmember library, resampled onto ``energies`` (the measured grid by
+    default; pass ``None`` to keep the library's native grid)."""
     path = Path(path) if path else Path(__file__).with_name("data") / "endmembers.npz"
     d = np.load(path, allow_pickle=True)
-    return np.asarray(d["energies"], float), np.asarray(d["endmembers"], float), [str(n) for n in d["names"]]
+    e0, m0 = np.asarray(d["energies"], float), np.asarray(d["endmembers"], float)
+    names = [str(n) for n in d["names"]]
+    if energies is None:
+        return e0, m0, names
+    e = np.asarray(energies, float)
+    return e, np.stack([np.interp(e, e0, row) for row in m0]), names
 
 
 def build_phantom(size: int = 320, i0_counts: float = 350.0, seed: int = 0,
-                  minor_level: float = 1.0, endmembers_path: str | Path | None = None) -> Phantom:
+                  minor_level: float = 1.0, endmembers_path: str | Path | None = None,
+                  thickness_sd: float = 0.15) -> Phantom:
     """Build the phantom.
 
-    ``minor_level`` is the peak abundance of a minor phase where it is present:
-    each minor phase is *mixed into* the matrix at this fraction (not a pure
-    region), so it is a subtle, low-contrast deviation from the matrix — the
-    realistic "trace/minor phase" case that is hard for variance methods.
-    ``i0_counts`` sets the photon budget (lower = noisier).
+    ``minor_level`` is the peak abundance of a minor phase where it is present
+    (the rest being matrix).  At the default 1.0 the blob cores are pure phase
+    and only the 1-px blurred rims are mixed; values < 1 mix every minor phase
+    into the matrix.  ``i0_counts`` sets the photon budget (lower = noisier).
+
+    Design note: every minor phase has its own sharp, non-overlapping π* peak
+    (286.6-290.8 eV) and the matrix peaks at 285.1 eV, i.e. the favourable case
+    in which the peak map separates all phases.  The phantom therefore tests
+    extraction and classification *when the diagnostic peaks are distinct*; it
+    does not model phases that differ only in peak-intensity ratios.
     """
     energies, endmembers, names = load_endmembers(endmembers_path)
     P = len(endmembers)
     rng = np.random.default_rng(seed)
     shape = (size, size)
 
-    # Minor-phase abundance blobs (soft edges), each mixed into the matrix at a
-    # modest level so it is a low-contrast trace, not a pure region.
+    # Minor-phase abundance blobs with 1-px blurred edges, at ``minor_level``.
     minor = np.zeros((P - 1, *shape))
     for i, cfg in enumerate(_MINOR_LAYOUT[: P - 1]):
         f = _disk_field(shape, rng, cfg["n"], cfg["r"], cfg["frac"])
@@ -92,9 +114,14 @@ def build_phantom(size: int = 320, i0_counts: float = 350.0, seed: int = 0,
     matrix = 1.0 - minor_sum                                     # matrix fills the rest
     abundances = np.concatenate([matrix[None], minor], axis=0)   # (P, Y, X), sum ~ 1
 
-    # Smooth thickness/density field (0.6 .. 1.4) multiplies every pixel.
-    thickness = 1.0 + 0.4 * gaussian_filter(rng.standard_normal(shape), size / 12.0)
-    thickness = np.clip(thickness / thickness.mean(), 0.6, 1.4)
+    # Smooth thickness/density field multiplying every pixel.  Smoothing white
+    # noise over ~27 px removes almost all of its variance, so the smoothed field
+    # is rescaled to unit s.d. first; the default 0.15 s.d. spans roughly 0.6-1.4
+    # (``thickness_sd=0`` gives a uniform thickness).
+    smooth = gaussian_filter(rng.standard_normal(shape), size / 12.0)
+    smooth = (smooth - smooth.mean()) / smooth.std()
+    thickness = np.clip(1.0 + thickness_sd * smooth, 0.6, 1.4)
+    thickness = thickness / thickness.mean()
 
     # Noise-free OD = thickness * sum_p abundance_p * endmember_p(E)
     od_true = thickness[None] * np.tensordot(endmembers.T, abundances, axes=(1, 0))  # (E,Y,X)
