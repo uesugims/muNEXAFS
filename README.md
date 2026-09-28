@@ -338,11 +338,11 @@ R² and rendered as a colour map (`muaxis.processing.fitting.spectral_r2_map`).
   squares (a fixed-reference R², which can be negative; it is not the squared
   Pearson correlation of a fitted line).
 - **Classifier** (combo): the per-pixel matching rule against the references.
-  `R²` (default, above) is the lightest and most interpretable; `SAM` scores by
-  spectral-angle cosine similarity; `LCF` by non-negative linear-combination
-  fractional abundance (a fast OLS + clip approximation). SAM and LCF reduce the
-  over-detection of very faint phases; because LCF scores are fractional
-  abundances, lower the score floor when using it. R², SAM and LCF share the
+  `R²` (default, above) compares shape and normalized intensity; `SAM` scores
+  by spectral-angle cosine similarity (shape only, ignoring overall scale);
+  `LCF` gives the non-negative linear-combination fractional abundance (a fast
+  OLS + clip approximation), intended for mixed-phase analysis; because LCF
+  scores are fractional abundances, lower the score floor when using it. R², SAM and LCF share the
   floor, single-phase and RGBY logic (higher score = better match).
 - A **score floor** clips `[floor, 1]` to `[0, 1]` as each channel's weight. The Y
   channel is added to R and G to form the displayed colour (premultiplied RGBA).
@@ -362,9 +362,12 @@ R² and rendered as a colour map (`muaxis.processing.fitting.spectral_r2_map`).
      background noise).
   3. **Subtract pre-edge + Absolute max**: after pre-edge subtraction, scale by
      the absolute maximum.
-  4. **Subtract pre-edge + max at energy**: after pre-edge subtraction, scale so
-     the value at a **chosen energy** equals 1 (matching pixel and reference at
-     that energy). The energy is chosen in the adjacent dropdown.
+  4. **Subtract pre-edge + mean over band**: after pre-edge subtraction, scale so
+     the **mean over a chosen energy band** equals 1 (matching pixel and
+     reference there). The band is set in the adjacent dropdowns (default
+     291–292 eV: above the organic π* and below the σ* resonances, so it tracks
+     the total carbon amount; averaging several energies suppresses the photon
+     noise that a single normalization energy would carry).
 
 **Operation**
 

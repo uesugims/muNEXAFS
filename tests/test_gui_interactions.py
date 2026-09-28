@@ -238,3 +238,29 @@ class SegmentationImageExportTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class FittingBandNormalizationTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.app = QApplication.instance() or QApplication([])
+
+    def setUp(self):
+        from muaxis.gui.fitting_window import FittingWindow
+        self.E = np.round(np.concatenate([np.arange(280.0, 283.6, 0.5), np.arange(283.6, 292.05, 0.1),
+                                          np.arange(292.5, 300.1, 0.5)]), 2)
+        base = 0.35 + 0.55 / (1.0 + np.exp(-(self.E - 288.0) / 1.6))
+        stack = np.repeat(base[:, None, None], 4, axis=1).repeat(4, axis=2) * 2.0
+        groups = {"G": {"cluster_ids": [1], "profiles": [base]}}
+        self.win = FittingWindow(self.E, stack, groups, pre_edge_range=(280.0, 281.0))
+
+    def test_default_band_is_291_to_292_ev(self):
+        self.assertEqual(self.win._norm_band(), (291.0, 292.0))
+
+    def test_band_mode_scales_mean_over_band_to_one(self):
+        self.win.norm.setCurrentIndex(3)
+        self.win.labels[0].setCurrentText("G")
+        data, refs, _ = self.win._prepare(self.win.od_stack, self.win._selected_refs())
+        band = self.win._norm_band_mask()
+        self.assertAlmostEqual(float(np.nanmean(data[band, 0, 0])), 1.0, places=6)
+        self.assertAlmostEqual(float(np.nanmean(refs[0][band])), 1.0, places=6)

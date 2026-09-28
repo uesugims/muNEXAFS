@@ -25,13 +25,23 @@ class FittingWindow(QMainWindow):
         #   1 Min–max              : shape only (baseline + amplitude normalized)
         #   2 Subtract pre-edge    : baseline removed, amplitude kept (量に敏感)
         #   3 " + Absolute max     : baseline removed, scaled by |max|
-        #   4 " + max at energy    : baseline removed, scaled so a chosen energy = 1
-        right.addWidget(QLabel("Profile normalization")); self.norm=QComboBox(); self.norm.addItems(["Min–max", "Subtract pre-edge", "Subtract pre-edge + Absolute max", "Subtract pre-edge + max at energy"]); self.norm.currentIndexChanged.connect(self._norm_changed); right.addWidget(self.norm)
-        # Energy at which mode 4 normalizes every spectrum to 1, so pixel and
-        # reference are made to agree at that energy.  Shown only for mode 4.
-        self.norm_energy_label=QLabel("Normalize at"); right.addWidget(self.norm_energy_label); self.norm_energy=QComboBox(); self.norm_energy.addItems([f"{e:.4g} eV" for e in self.energies_eV]); self.norm_energy.setCurrentIndex(len(self.energies_eV)-1); self.norm_energy.currentIndexChanged.connect(self._plot_refs); right.addWidget(self.norm_energy)
-        self.norm_energy_label.setVisible(False); self.norm_energy.setVisible(False)
-        right.addWidget(QLabel("Classifier")); self.classifier=QComboBox(); self.classifier.addItems(["R² (fixed reference)", "SAM (spectral angle)", "LCF (non-negative fit)"]); self.classifier.setToolTip("Per-pixel matching rule against the reference spectra.\nR² is the lightest and default; SAM and LCF reduce over-detection of very faint phases.\nLCF scores are fractional abundances, so lower the score floor when using it."); right.addWidget(self.classifier)
+        #   4 " + mean over band   : baseline removed, scaled so the mean over a
+        #                            chosen energy band = 1 (default 291-292 eV: above
+        #                            the organic π* and below the σ* resonances, so it
+        #                            tracks total carbon; averaging suppresses noise)
+        right.addWidget(QLabel("Profile normalization")); self.norm=QComboBox(); self.norm.addItems(["Min–max", "Subtract pre-edge", "Subtract pre-edge + Absolute max", "Subtract pre-edge + mean over band"]); self.norm.currentIndexChanged.connect(self._norm_changed); right.addWidget(self.norm)
+        # Energy band over which mode 4 normalizes every spectrum to a mean of 1,
+        # so pixel and reference agree there.  Shown only for mode 4.
+        self.norm_energy_label=QLabel("Normalize over"); right.addWidget(self.norm_energy_label)
+        band_row=QHBoxLayout(); self.norm_lo=QComboBox(); self.norm_hi=QComboBox()
+        for combo, target in ((self.norm_lo, 291.0), (self.norm_hi, 292.0)):
+            combo.setMinimumWidth(0); combo.addItems([f"{e:.4g} eV" for e in self.energies_eV])
+            combo.setCurrentIndex(int(np.argmin(np.abs(np.asarray(self.energies_eV, float) - target))))
+            combo.currentIndexChanged.connect(self._plot_refs)
+        self.norm_to_label=QLabel("to"); band_row.addWidget(self.norm_lo); band_row.addWidget(self.norm_to_label); band_row.addWidget(self.norm_hi)
+        self.norm_band_widget=QWidget(); self.norm_band_widget.setLayout(band_row); right.addWidget(self.norm_band_widget)
+        self.norm_energy_label.setVisible(False); self.norm_band_widget.setVisible(False)
+        right.addWidget(QLabel("Classifier")); self.classifier=QComboBox(); self.classifier.addItems(["R² (fixed reference)", "SAM (spectral angle)", "LCF (non-negative fit)"]); self.classifier.setToolTip("Per-pixel matching rule against the reference spectra.\nR² (default) compares shape and normalized intensity; SAM compares shape only.\nLCF gives fractional abundances for mixed-phase analysis, so lower the score floor when using it."); right.addWidget(self.classifier)
         right.addWidget(QLabel("Score floor")); self.floor=QDoubleSpinBox(); self.floor.setRange(-1,1); self.floor.setSingleStep(.01); self.floor.setValue(.9); right.addWidget(self.floor)
         self.single_phase_check=QCheckBox("Single-phase assignment"); self.single_phase_check.setChecked(False); self.single_phase_check.setToolTip("Assign each pixel to the single highest-R² phase (winner-take-all) instead of a blended mixture."); right.addWidget(self.single_phase_check)
         self.blur_check=QCheckBox("Gaussian blur"); self.blur_check.setChecked(True); right.addWidget(self.blur_check); blur_row=QHBoxLayout(); blur_row.addWidget(QLabel("Radius")); self.blur_radius=QLineEdit("0.7"); self.blur_radius.setMaximumWidth(70); blur_row.addWidget(self.blur_radius); right.addLayout(blur_row)
@@ -50,7 +60,7 @@ class FittingWindow(QMainWindow):
         return np.asarray(out)
     def _norm_changed(self):
         show = self.norm.currentIndex() == 3
-        self.norm_energy_label.setVisible(show); self.norm_energy.setVisible(show)
+        self.norm_energy_label.setVisible(show); self.norm_band_widget.setVisible(show)
         self._plot_refs()
     def _pre_range(self):
         if self.pre_edge_range is not None:
@@ -62,16 +72,22 @@ class FittingWindow(QMainWindow):
         if not (mask.any() and np.isfinite(row).any()):
             return np.asarray(row, float)
         pre = np.nanmean(np.where(mask, row, np.nan)); return np.maximum(np.asarray(row, float) - pre, 0.0)
-    def _norm_energy_index(self):
-        return max(0, min(self.norm_energy.currentIndex(), len(self.energies_eV) - 1))
+    def _norm_band(self):
+        """(low, high) eV of the mode-4 normalization band."""
+        e = np.asarray(self.energies_eV, float); n = len(e) - 1
+        lo = e[max(0, min(self.norm_lo.currentIndex(), n))]; hi = e[max(0, min(self.norm_hi.currentIndex(), n))]
+        return (float(min(lo, hi)), float(max(lo, hi)))
+    def _norm_band_mask(self):
+        lo, hi = self._norm_band(); e = np.asarray(self.energies_eV, float)
+        return (e >= lo) & (e <= hi)
     @staticmethod
     def _minmax(r):
         r = np.asarray(r, float); lo, hi = np.nanmin(r), np.nanmax(r); return (r - lo) / (hi - lo) if hi != lo else np.zeros_like(r)
     @staticmethod
     def _absmax(r):
         r = np.asarray(r, float); s = np.nanmax(np.abs(r)); return r / s if s else np.zeros_like(r)
-    def _norm_at_energy_row(self, row):
-        row = np.asarray(row, float); d = row[self._norm_energy_index()]
+    def _norm_over_band_row(self, row):
+        row = np.asarray(row, float); d = np.nanmean(row[self._norm_band_mask()])
         return row / d if np.isfinite(d) and d != 0 else np.full_like(row, np.nan)
     def _display_refs(self):
         """Selected references processed exactly as the map will use them, for
@@ -83,7 +99,7 @@ class FittingWindow(QMainWindow):
         if mode == 2:
             return [self._absmax(r) if np.isfinite(r).any() else r for r in refs]
         if mode == 3:
-            return [self._norm_at_energy_row(r) if np.isfinite(r).any() else r for r in refs]
+            return [self._norm_over_band_row(r) if np.isfinite(r).any() else r for r in refs]
         return refs
     def _prepare(self, data, refs):
         """Return (data, refs, spectral_r2_map normalization) for the mode."""
@@ -96,9 +112,9 @@ class FittingWindow(QMainWindow):
         if mode == 2:
             return data, refs, "Absolute max"
         if mode == 3:
-            idx = self._norm_energy_index(); denom = np.where(data[idx] == 0, np.nan, data[idx])
+            band = np.nanmean(data[self._norm_band_mask()], axis=0); denom = np.where(band == 0, np.nan, band)
             data = data / denom[None]
-            refs = np.asarray([self._norm_at_energy_row(r) for r in refs])
+            refs = np.asarray([self._norm_over_band_row(r) for r in refs])
             return data, refs, "None"
         return data, refs, "None"
     def _plot_refs(self):
@@ -133,7 +149,7 @@ class FittingWindow(QMainWindow):
             parameters["pre_edge_range_eV"] = list(self._pre_range())
             parameters["clip_negative_after_pre_edge"] = True
         if self.norm.currentIndex() == 3:
-            parameters["normalization_energy_eV"] = float(self.energies_eV[self._norm_energy_index()])
+            parameters["normalization_band_eV"] = list(self._norm_band())
         self.result = replace(
             spectral_r2_map(data, self.energies_eV, refs, normalization=norm, r2_floor=self.floor.value(),
                             classifier=classifier, single_phase=self.single_phase_check.isChecked()),
