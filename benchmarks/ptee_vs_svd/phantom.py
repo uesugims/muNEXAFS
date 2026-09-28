@@ -36,17 +36,17 @@ class Phantom:
 
 
 # area fraction and blob radius (px) per minor phase; index 0 is the matrix.
-# A geometric ladder of shrinking area exposes where each method breaks down.
+# A geometric ladder (x ~3.6 per step) of shrinking area and blob size
+# exposes where each method breaks down.
 _MINOR_LAYOUT = [
-    dict(frac=0.045, r=(9, 16), n=10),    # minor1  ~4.5 %
-    dict(frac=0.018, r=(6, 11), n=10),    # minor2  ~1.8 %
-    dict(frac=0.007, r=(4, 7), n=14),     # minor3  ~0.7 %
-    dict(frac=0.0025, r=(2, 4), n=22),    # minor4  ~0.25 %
-    dict(frac=0.0010, r=(2, 3), n=30),    # minor5  ~0.1 %  (tiniest: hardest)
+    dict(frac=0.045, r=(9, 16)),     # minor1  ~4.5 %
+    dict(frac=0.0125, r=(5, 9)),     # minor2  ~1.25 %
+    dict(frac=0.0035, r=(3, 5)),     # minor3  ~0.35 %
+    dict(frac=0.0010, r=(2, 3)),     # minor4  ~0.1 %  (tiniest: hardest)
 ]
 
 
-def _disk_field(shape, rng, n, r_range, target_frac):
+def _disk_field(shape, rng, r_range, target_frac):
     """Random overlapping disks until the covered fraction reaches target."""
     Y, X = shape
     field = np.zeros(shape, dtype=float)
@@ -94,7 +94,7 @@ def build_phantom(size: int = 320, i0_counts: float = 350.0, seed: int = 0,
     into the matrix.  ``i0_counts`` sets the photon budget (lower = noisier).
 
     Design note: every minor phase has its own sharp, non-overlapping π* peak
-    (286.6-290.8 eV) and the matrix peaks at 285.1 eV, i.e. the favourable case
+    (285.1-288.6 eV) over a matrix that is the bare edge baseline, i.e. the favourable case
     in which the peak map separates all phases.  The phantom therefore tests
     extraction and classification *when the diagnostic peaks are distinct*; it
     does not model phases that differ only in peak-intensity ratios.
@@ -107,7 +107,7 @@ def build_phantom(size: int = 320, i0_counts: float = 350.0, seed: int = 0,
     # Minor-phase abundance blobs with 1-px blurred edges, at ``minor_level``.
     minor = np.zeros((P - 1, *shape))
     for i, cfg in enumerate(_MINOR_LAYOUT[: P - 1]):
-        f = _disk_field(shape, rng, cfg["n"], cfg["r"], cfg["frac"])
+        f = _disk_field(shape, rng, cfg["r"], cfg["frac"])
         minor[i] = minor_level * gaussian_filter(f, 1.0)
     minor = np.clip(minor, 0, 1)
     minor_sum = np.clip(minor.sum(0), 0, 1)

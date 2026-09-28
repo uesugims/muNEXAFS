@@ -51,10 +51,11 @@ times are only meaningful with that context.
 - **Phantom** (`phantom.py`): a large OD cube built from endmember spectra with
   known ground-truth phase locations — one dominant matrix phase plus several
   **minor phases of shrinking area** (≈5 % → 0.1 %), sampled on the measured
-  energy grid of the paper (109 points, 280–300 eV, incl. 291.5 eV). Each
-  endmember is a shared sigmoid edge plus one Gaussian π* peak at its own energy
-  (`make_endmembers.py`), i.e. the favourable case in which the peak map
-  separates every phase. A smooth thickness/density field (0.6–1.4×, s.d. 0.15;
+  energy grid of the paper (109 points, 280–300 eV, incl. 291.5 eV). The matrix
+  is the bare sigmoid edge baseline; each of the four minor phases adds one
+  Gaussian π* peak of an organic functional group (285.1 / 286.6 / 287.5 /
+  288.6 eV; `make_endmembers.py`), i.e. the favourable case in which the peak
+  map separates every phase. PCA + k-means is run at k = 5 and 10. A smooth thickness/density field (0.6–1.4×, s.d. 0.15;
   `thickness_sd`) multiplies every pixel (so total absorption ≠ composition), and
   Poisson photon noise (I0 = 350 counts) is applied at the transmission level.
   Ground truth: abundance ≥ 0.5 × `minor_level`.

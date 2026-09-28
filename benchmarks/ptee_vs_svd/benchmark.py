@@ -133,13 +133,16 @@ def _pre_edge_subtract(od, n_pre=3):
     return np.clip(od - np.nanmean(od[:n_pre], axis=0)[None], 0.0, None)
 
 
-def _peak_map(odp):
-    # A light centred 3-tap running mean along energy removes per-pixel argmax
-    # jitter from photon noise (essential for the tiniest phase); done by hand it
-    # is far cheaper than scipy's filters.
+def _peak_map(odp, in_win):
+    # Energy of maximum OD within the π* window (as the GUI peak map, which
+    # takes an energy range); post-edge σ* energies are excluded.  A light
+    # centred 3-tap running mean along energy removes per-pixel argmax jitter
+    # from photon noise (essential for the tiniest phase); done by hand it is
+    # far cheaper than scipy's filters.
     sm = odp.copy()
     sm[1:-1] = (odp[:-2] + odp[1:-1] + odp[2:]) / 3.0
-    return np.argmax(sm, axis=0)
+    idx = np.flatnonzero(in_win)
+    return idx[np.argmax(sm[idx], axis=0)]
 
 
 def ptee_extract(od, energies, n_phases, *, min_mode_frac=5e-4, peak_window=(284.0, 291.5)):
@@ -155,10 +158,10 @@ def ptee_extract(od, energies, n_phases, *, min_mode_frac=5e-4, peak_window=(284
     """
     odp = _pre_edge_subtract(od)
     E = od.shape[0]
-    pk = _peak_map(odp)
+    in_win = (energies >= peak_window[0]) & (energies <= peak_window[1])
+    pk = _peak_map(odp, in_win)
     counts = np.bincount(pk.ravel(), minlength=E).astype(float)
     npix = pk.size
-    in_win = (energies >= peak_window[0]) & (energies <= peak_window[1])
     cand = [i for i in range(E)
             if in_win[i] and counts[i] >= max(3.0, min_mode_frac * npix)
             and counts[i] >= counts[max(0, i - 1)] and counts[i] >= counts[min(E - 1, i + 1)]]
@@ -184,8 +187,10 @@ def extracted_refs_by_phase(ph):
     phase whose peak energy is nearest (evaluation labelling only).  Returns a
     (P, E) array with a NaN row for any phase that produced no distinct peak-map
     mode (so its PTEE detection map is empty = missed)."""
-    ext, peaks = ptee_extract(ph.od, ph.energies, len(ph.names))
-    true_peaks = ph.energies[np.argmax(ph.endmembers, axis=1)]
+    window = (284.0, 291.5)                      # same π* window as the peak map
+    ext, peaks = ptee_extract(ph.od, ph.energies, len(ph.names), peak_window=window)
+    win = np.flatnonzero((ph.energies >= window[0]) & (ph.energies <= window[1]))
+    true_peaks = ph.energies[win[np.argmax(ph.endmembers[:, win], axis=1)]]
     P, E = len(ph.names), ph.od.shape[0]
     aligned = np.full((P, E), np.nan); used = set()
     for i, pe in enumerate(peaks):
@@ -266,7 +271,7 @@ def supervised_maps(od, refs):
                 lcf=lcf_frac_maps(od, refs))
 
 
-CLUSTER_K = (6, 12)          # k values scanned for the PCA+k-means workflow
+CLUSTER_K = (5, 10)          # PCA+k-means: k = number of phases, and twice that
 
 
 def _kmeans_labels(feats, k_values=CLUSTER_K, n_init=10, iters=300):
@@ -507,7 +512,7 @@ EXTRACTED_CLASSIFIERS = ("ptee_sam", "ptee_lcf", "oracle_r2")
 METHOD_LABEL.update(ptee_sam="PTEE+SAM", ptee_lcf="PTEE+LCF", oracle_r2="R² (true refs)")
 # PCA+cluster reported at each cluster count k separately (both are shown, rather
 # than keeping the best), so the reader sees the k-sensitivity directly.
-CLUSTER_METHODS = tuple(f"cluster{k}" for k in CLUSTER_K)     # ("cluster6", "cluster12")
+CLUSTER_METHODS = tuple(f"cluster{k}" for k in CLUSTER_K)     # ("cluster5", "cluster10")
 METHODS_EVAL = METHODS + EXTRACTED_CLASSIFIERS + CLUSTER_METHODS
 for _k in CLUSTER_K:
     METHOD_LABEL[f"cluster{_k}"] = f"PCA k={_k}"
@@ -639,7 +644,7 @@ def main() -> int:
         # Time a single converged k-means at one k (the minimal converged cost).
         # A robust analysis uses n_init restarts, which multiplies this; the
         # reported figure is therefore a lower bound on the variance-route cost.
-        _kmeans_labels(feats, k_values=(12,), n_init=1)
+        _kmeans_labels(feats, k_values=(CLUSTER_K[-1],), n_init=1)
 
     speed = dict(
         ptee_s=median_time(lambda: ptee_r2_maps(paper_normalize(ph.od, ph.energies), refs_n, "None")),
@@ -835,18 +840,19 @@ def _paper_figures(ph, maps, rows, speed, scaling):
     fig.subplots_adjust(left=0.035, right=0.99, top=0.88, bottom=0.07)
     fig.savefig(OUT / "paper_fig_detection.png", dpi=150); plt.close(fig)
 
-    # Paper Fig (summary): (A) F1 vs area for PTEE and PCA+cluster at k = 6 and
-    # k = 12 (both shown), and (B) speed scaling.  The failure-mode panel is
+    # Paper Fig (summary): (A) F1 vs area for PTEE and PCA+cluster at both
+    # CLUSTER_K values, and (B) speed scaling.  The failure-mode panel is
     # dropped: it added little to the discussion.
     minor_rows = [r for r in rows if r["phase"] != "matrix"]
     order = np.argsort([r["area_pct"] for r in minor_rows])
     xs = [minor_rows[i]["area_pct"] for i in order]
     fig, ax = plt.subplots(1, 2, figsize=(10.5, 4.4))
-    # Draw back-to-front so the largest error bars (k = 6) sit behind and never
-    # hide PTEE-R2, which is drawn last (on top).  k = 6 / k = 12 keep a common
+    # Draw back-to-front so the largest error bars (small k) sit behind and never
+    # hide PTEE-R2, which is drawn last (on top).  the two k keep a common
     # purple family but with enough contrast to tell apart.
-    series = [("cluster6", "P--", "#54278f", "PCA + clustering (k = 6)", 1),
-              ("cluster12", "s:", "#c994c7", "PCA + clustering (k = 12)", 2),
+    k_lo, k_hi = CLUSTER_K
+    series = [(f"cluster{k_lo}", "P--", "#54278f", f"PCA + clustering (k = {k_lo})", 1),
+              (f"cluster{k_hi}", "s:", "#c994c7", f"PCA + clustering (k = {k_hi})", 2),
               ("ptee", "o-", colors["ptee"], "PTEE-R2", 3)]
     for mth, mk, col, lab, zo in series:
         ys = [minor_rows[i][f"{mth}_f1"] for i in order]
