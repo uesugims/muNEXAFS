@@ -646,14 +646,33 @@ def main() -> int:
         # reported figure is therefore a lower bound on the variance-route cost.
         _kmeans_labels(feats, k_values=(CLUSTER_K[-1],), n_init=1)
 
+    def ptee_full(cube):
+        # Whole PTEE pipeline: endmember extraction + R² mapping.
+        ext, _ = ptee_extract(cube, ph.energies, len(ph.names))
+        ptee_r2_maps(paper_normalize(cube, ph.energies), paper_normalize(ext, ph.energies), "None")
+
+    def cluster_fast(cube):
+        # Efficient implementation of the same route: PCA by covariance
+        # eigendecomposition + scikit-learn k-means (k-means++, one run).
+        from sklearn.cluster import KMeans
+        X = cube.reshape(cube.shape[0], -1).T; Xc = X - X.mean(0)
+        _, V = np.linalg.eigh(Xc.T @ Xc)
+        f = Xc @ V[:, ::-1][:, :nclust]
+        KMeans(CLUSTER_K[-1], n_init=1, max_iter=300, random_state=0).fit(f / f.std(0))
+
     speed = dict(
         ptee_s=median_time(lambda: ptee_r2_maps(paper_normalize(ph.od, ph.energies), refs_n, "None")),
+        ptee_full_s=median_time(lambda: ptee_full(ph.od)),
         sam_s=median_time(lambda: sam_corr_maps(paper_normalize(ph.od, ph.energies), refs_n)),
         lcf_s=median_time(lambda: lcf_frac_maps(paper_normalize(ph.od, ph.energies), refs_n)),
         pca_s=median_time(lambda: decompose_stack(ph.od, ncomp, "PCA")),
         svd_s=median_time(lambda: decompose_stack(ph.od, ncomp, "SVD (uncentered)")),
         cluster_s=median_time(lambda: cluster_workflow(ph.od), 3),
     )
+    try:                                   # optional: needs scikit-learn
+        speed["cluster_fast_s"] = median_time(lambda: cluster_fast(ph.od), 3)
+    except ImportError:
+        pass
     # scaling over pixel count (spatial crops)
     scaling = []
     for frac in (0.25, 0.5, 0.75, 1.0):
@@ -840,13 +859,13 @@ def _paper_figures(ph, maps, rows, speed, scaling):
     fig.subplots_adjust(left=0.035, right=0.99, top=0.88, bottom=0.07)
     fig.savefig(OUT / "paper_fig_detection.png", dpi=150); plt.close(fig)
 
-    # Paper Fig (summary): (A) F1 vs area for PTEE and PCA+cluster at both
-    # CLUSTER_K values, and (B) speed scaling.  The failure-mode panel is
-    # dropped: it added little to the discussion.
+    # Paper Fig (summary): F1 vs area for PTEE and PCA+cluster at both
+    # CLUSTER_K values.  Speed is a minor point in the paper and is reported in
+    # the text only (fig3_summary.png keeps the scaling plot).
     minor_rows = [r for r in rows if r["phase"] != "matrix"]
     order = np.argsort([r["area_pct"] for r in minor_rows])
     xs = [minor_rows[i]["area_pct"] for i in order]
-    fig, ax = plt.subplots(1, 2, figsize=(10.5, 4.4))
+    fig, ax = plt.subplots(1, 1, figsize=(5.6, 4.4)); ax = [ax]
     # Draw back-to-front so the largest error bars (small k) sit behind and never
     # hide PTEE-R2, which is drawn last (on top).  the two k keep a common
     # purple family but with enough contrast to tell apart.
@@ -861,17 +880,10 @@ def _paper_figures(ph, maps, rows, speed, scaling):
                        zorder=zo, elinewidth=1.2, alpha=0.95)
     ax[0].set_xscale("log"); ax[0].invert_xaxis()
     ax[0].set_xlabel("Phase area fraction (%)"); ax[0].set_ylabel("Detection F1")
-    ax[0].set_title("(A) Minor-phase detection F1 vs area"); ax[0].set_ylim(-0.02, 1.02)
+    ax[0].set_title("Minor-phase detection F1 vs area"); ax[0].set_ylim(-0.02, 1.02)
     h, l = ax[0].get_legend_handles_labels()                 # show PTEE-R2 first
     ax[0].legend([h[2], h[0], h[1]], [l[2], l[0], l[1]], fontsize=8)
     ax[0].grid(alpha=0.3)
-    px = [s["pixels"] for s in scaling]
-    ax[1].plot(px, [s["ptee_s"] * 1e3 for s in scaling], "o-", color=colors["ptee"], label="PTEE")
-    ax[1].plot(px, [s["cluster_s"] * 1e3 for s in scaling], "P--", color=colors["cluster"], label="PCA + clustering")
-    if "pca_s" in scaling[0]:
-        ax[1].plot(px, [s["pca_s"] * 1e3 for s in scaling], "s:", color="#999999", label="PCA/SVD (reference)")
-    ax[1].set_xlabel("Pixels"); ax[1].set_ylabel("Time (ms)"); ax[1].set_title("(B) Speed scaling")
-    ax[1].legend(fontsize=8); ax[1].grid(alpha=0.3)
     fig.tight_layout(); fig.savefig(OUT / "paper_fig_summary.png", dpi=150); plt.close(fig)
 
 
@@ -888,11 +900,12 @@ def _report(m):
       f"phases: {', '.join(c['phases'])}.")
     A(f"- Poisson noise at I0 = {c['i0_counts']:.0f} counts; a smooth thickness/density "
       f"field (0.6–1.4) multiplies every pixel so total absorption ≠ composition.")
-    A(f"- Endmembers: distinct π* resonances on a real UVSOR C K-edge energy grid "
+    A(f"- Endmembers: bare edge baseline (matrix) + one organic π* peak per minor phase, "
+      f"on the measured 109-point energy grid "
       f"(`data/endmembers.npz`); {c['phases_str']}.")
     A("- **Two families of methods are compared:**")
     A(f"    - **Supervised (given the same known endmember spectra):** **PTEE** (per-pixel "
-      f"min–max R²), **SAM** (spectral-angle correlation, the classic hyperspectral "
+      f"R² after pre-edge + 291.5 eV normalization), **SAM** (spectral-angle correlation, the classic hyperspectral "
       f"target-detection analog), and **LCF** (non-negative linear-combination fit, the standard "
       f"supervised unmixing). All three receive *identical* reference spectra, so PTEE has **no "
       f"information advantage** over SAM/LCF — the comparison isolates the matching rule and the "
