@@ -61,7 +61,7 @@ times are only meaningful with that context.
   Ground truth: abundance ≥ 0.5 × `minor_level`.
 - **Supervised methods (same known spectra)** — the fair comparison:
   - **PTEE**: per-pixel R² after the paper's normalization (pre-edge
-    subtraction + normalization at 291.5 eV, `paper_normalize`); the benchmark's
+    subtraction + normalization by the mean over 291–292 eV, `paper_normalize`); the benchmark's
     `ptee_r2_maps` reproduces that math for any number of references and is
     checked against the GUI function.
   - **SAM**: spectral-angle mapper (`sam_corr_maps`) — correlation of each pixel

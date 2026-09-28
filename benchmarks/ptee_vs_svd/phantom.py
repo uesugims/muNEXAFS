@@ -62,7 +62,7 @@ def _disk_field(shape, rng, r_range, target_frac):
 
 # Energy grid of the measured stacks (paper Section 2.1): 280-283.5 eV in 0.5 eV
 # steps, 283.6-292 eV in 0.1 eV steps, 292.5-300 eV in 0.5 eV steps (109 points,
-# including the 291.5 eV normalization energy).
+# covering the 291-292 eV normalization band).
 MEASURED_ENERGIES = np.round(np.concatenate([
     np.arange(280.0, 283.5 + 1e-9, 0.5),
     np.arange(283.6, 292.0 + 1e-9, 0.1),

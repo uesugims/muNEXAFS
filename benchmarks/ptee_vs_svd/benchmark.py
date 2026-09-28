@@ -247,18 +247,20 @@ def lcf_frac_maps(od, refs):
     return out.reshape(len(refs), y, x)
 
 
-NORM_ENERGY = 291.5          # upper-limit normalization energy (paper Section 3.3)
+NORM_BAND = (291.0, 292.0)   # upper-limit normalization band (paper Section 3.3)
 
 
-def paper_normalize(a, energies, e_norm=NORM_ENERGY, n_pre=3):
+def paper_normalize(a, energies, band=NORM_BAND, n_pre=3):
     """Normalization of the paper (Section 3.3): subtract the pre-edge (mean of
-    the first ``n_pre`` energies), clip at zero, then divide by the value at
-    ``e_norm``.  ``a`` is an (E, Y, X) cube or a (P, E) set of spectra."""
+    the first ``n_pre`` energies), clip at zero, then divide by the mean over
+    the energy ``band`` (291-292 eV: above the organic π* and below the σ*
+    resonances).  ``a`` is an (E, Y, X) cube or a (P, E) set of spectra."""
     a = np.asarray(a, float)
     cube = a.ndim == 3
     m = a.reshape(a.shape[0], -1) if cube else a.T            # (E, N)
     m = np.clip(m - np.nanmean(m[:n_pre], axis=0, keepdims=True), 0.0, None)
-    d = m[int(np.argmin(np.abs(np.asarray(energies) - e_norm)))]
+    e = np.asarray(energies, float)
+    d = np.nanmean(m[(e >= band[0] - 1e-6) & (e <= band[1] + 1e-6)], axis=0)
     m = np.divide(m, d, out=np.full_like(m, np.nan), where=d > 0)
     return m.reshape(a.shape) if cube else m.T
 
@@ -526,7 +528,7 @@ def detect(ph, refs, ncomp, size):
     non-negative abundance.  Unsupervised: PCA/SVD oracle best component, and the
     realistic PCA→k-means cluster workflow (oracle best cluster per phase).
     """
-    # Classifiers see the paper's normalization (pre-edge + 291.5 eV); the PCA
+    # Classifiers see the paper's normalization (pre-edge + 291-292 eV mean); the PCA
     # routes below work on OD, as in the standard (MANTiS) workflow.
     odn = paper_normalize(ph.od, ph.energies)
     norm = lambda r: paper_normalize(r, ph.energies)
@@ -905,7 +907,7 @@ def _report(m):
       f"(`data/endmembers.npz`); {c['phases_str']}.")
     A("- **Two families of methods are compared:**")
     A(f"    - **Supervised (given the same known endmember spectra):** **PTEE** (per-pixel "
-      f"R² after pre-edge + 291.5 eV normalization), **SAM** (spectral-angle correlation, the classic hyperspectral "
+      f"R² after pre-edge + 291–292 eV mean normalization), **SAM** (spectral-angle correlation, the classic hyperspectral "
       f"target-detection analog), and **LCF** (non-negative linear-combination fit, the standard "
       f"supervised unmixing). All three receive *identical* reference spectra, so PTEE has **no "
       f"information advantage** over SAM/LCF — the comparison isolates the matching rule and the "
