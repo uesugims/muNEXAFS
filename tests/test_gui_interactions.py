@@ -87,6 +87,23 @@ class MainWindowFrameAndProfileTests(unittest.TestCase):
         self.assertEqual(self.w._current_frame, 2)
         self.assertEqual(self.w.frame_edit.text(), "3")
 
+    def test_changing_energy_keeps_user_contrast(self):
+        self.w.image_view.setLevels(1.2, 1.5)
+        self.w._select_frame(3)
+        self.assertEqual(self.w._current_frame, 3)
+        lo, hi = self.w.image_view.getLevels()
+        self.assertAlmostEqual(float(lo), 1.2)
+        self.assertAlmostEqual(float(hi), 1.5)
+
+    def test_new_scan_is_auto_scaled(self):
+        self.w.image_view.setLevels(1.2, 1.5)
+        self.w.scan = _scan(seed=1)
+        self.w._show_frame(0)
+        image = self.w.scan.transmission[0]
+        lo, hi = self.w.image_view.getLevels()
+        self.assertAlmostEqual(float(lo), float(image.min()), places=5)
+        self.assertAlmostEqual(float(hi), float(image.max()), places=5)
+
     def test_energy_cursor_selects_frame(self):
         self.w.energy_line.setValue(float(self.scan.energies_eV[3]))
         self.assertEqual(self.w._current_frame, 3)

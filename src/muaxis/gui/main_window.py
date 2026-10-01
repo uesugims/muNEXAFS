@@ -494,6 +494,10 @@ class MainWindow(QMainWindow):
             return
         self._current_frame = frame
         layer_name = self.layer_list.currentItem().text() if self.layer_list.currentItem() else ""
+        stack_key_before = getattr(self, "_stack_levels_key", None)
+        self._stack_levels_key = None          # map layers below reset it; the stack path restores it
+        if stack_key_before is not None and stack_key_before[0] == layer_name:
+            self._stack_levels_key = stack_key_before
         if layer_name == "PTEE RGBY map" and self._fitting_result is not None:
             self.frame_edit.setEnabled(False); self.map_palette_combo.setEnabled(False); self.reset_map_levels_button.setEnabled(False)
             # rgb_y holds premultiplied display colours already in [0, 1].  The
@@ -552,9 +556,17 @@ class MainWindow(QMainWindow):
         _hide_gradient_ticks(self.image_view)
         self._set_energy_line(frame)
         image = self._selected_layer_image(frame)
-        finite = image[np.isfinite(image)]
-        levels = None if finite.size == 0 else (float(finite.min()), float(finite.max()))
-        self.image_view.setImage(image, autoLevels=True, autoRange=True, levels=levels)
+        # Changing only the energy (frame) of the same layer keeps the contrast
+        # the user set; a different layer, scan or OD result is auto-scaled.
+        stack_key = (layer_name, id(self.scan), id(self._od_result))
+        current_levels = self.image_view.getLevels()
+        if stack_key == self._stack_levels_key and current_levels is not None:
+            self.image_view.setImage(image, autoLevels=False, autoRange=True, levels=tuple(map(float, current_levels)))
+        else:
+            finite = image[np.isfinite(image)]
+            levels = None if finite.size == 0 else (float(finite.min()), float(finite.max()))
+            self.image_view.setImage(image, autoLevels=True, autoRange=True, levels=levels)
+        self._stack_levels_key = stack_key
         self.frame_label.setText(
             f"{frame + 1}/{len(self.scan.frame_paths)} — "
             f"{self.scan.energies_eV[frame]:.6g} eV"
