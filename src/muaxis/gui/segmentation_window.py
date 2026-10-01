@@ -23,12 +23,17 @@ class _NumericItem(QTableWidgetItem):
 
 class SegmentationWindow(QMainWindow):
     resultReady = Signal(object)
+    NORM_MODES = ["Min–max", "None", "Two energy values", "Subtract pre-edge",
+                  "Subtract pre-edge + Absolute max", "Subtract pre-edge + mean over band"]
+    NORM_MINMAX, NORM_NONE, NORM_TWO_ENERGIES, NORM_PRESUB, NORM_ABSMAX, NORM_BAND = range(6)
 
     def __init__(self, scan: ScanStack, feature_map: np.ndarray, od_stack: np.ndarray,
                  source_label: str, layer_data: dict[str, np.ndarray] | None = None,
                  od_frame: int = 0, saved_groups: dict[str, dict] | None = None,
-                 saved_defaults: dict | None = None) -> None:
+                 saved_defaults: dict | None = None,
+                 pre_edge_range: tuple[float, float] | None = None) -> None:
         super().__init__()
+        self.pre_edge_range = pre_edge_range
         self.scan, self.od_stack = scan, od_stack
         self.layer_data = layer_data or {source_label: feature_map}
         self.saved_groups = dict(saved_groups or {})
@@ -84,7 +89,7 @@ class SegmentationWindow(QMainWindow):
         self.profile_plot = pg.PlotWidget(title="Cluster mean OD profiles"); self.profile_plot.setLabel("bottom", "Energy", units="eV"); self.profile_plot.setLabel("left", "Mean OD"); bottom_row.addWidget(self.profile_plot, 3)
         self.table = QTableWidget(0, 3); self.table.setHorizontalHeaderLabels(["Cluster", "Area", "Good"]); self.table.setColumnWidth(0, 52); self.table.setColumnWidth(1, 62); self.table.setColumnWidth(2, 42); self.table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows); self.table.setSelectionMode(QTableWidget.SelectionMode.ExtendedSelection); self.table.setSortingEnabled(True); self.table.itemSelectionChanged.connect(self._plot_selected); self.table.itemChanged.connect(self._table_item_changed); bottom_row.addWidget(self.table, 1); root.addLayout(bottom_row, 2)
 
-        controls = QHBoxLayout(); controls.addWidget(QLabel("Minimum size")); self.min_area_spin = QSpinBox(); self.min_area_spin.setRange(1, self.feature_map.size); self.min_area_spin.setValue(10); self.min_area_spin.valueChanged.connect(self._minimum_size_changed); controls.addWidget(self.min_area_spin); controls.addWidget(QLabel("Profile normalization")); self.norm_combo = QComboBox(); self.norm_combo.addItems(["Min–max", "None", "Two energy values"]); self.norm_combo.currentIndexChanged.connect(self._normalization_changed); controls.addWidget(self.norm_combo); controls.addWidget(QLabel("E1")); self.norm_e1 = QDoubleSpinBox(); controls.addWidget(self.norm_e1); controls.addWidget(QLabel("E2")); self.norm_e2 = QDoubleSpinBox(); controls.addWidget(self.norm_e2); self.exclude_bad = QCheckBox("Exclude bad data"); self.exclude_bad.toggled.connect(self._quality_filter_changed); controls.addWidget(self.exclude_bad); controls.addWidget(QLabel("Label")); self.label_edit = QLineEdit(); self.label_edit.setPlaceholderText("segmentation label"); self.label_edit.setMaximumWidth(180); controls.addWidget(self.label_edit); self.save_button = QPushButton("Save"); self.save_button.setEnabled(False); self.save_button.clicked.connect(self.save_result); controls.addWidget(self.save_button); root.addLayout(controls)
+        controls = QHBoxLayout(); controls.addWidget(QLabel("Minimum size")); self.min_area_spin = QSpinBox(); self.min_area_spin.setRange(1, self.feature_map.size); self.min_area_spin.setValue(10); self.min_area_spin.valueChanged.connect(self._minimum_size_changed); controls.addWidget(self.min_area_spin); controls.addWidget(QLabel("Profile normalization")); self.norm_combo = QComboBox(); self.norm_combo.addItems(self.NORM_MODES); self.norm_combo.currentIndexChanged.connect(self._normalization_changed); controls.addWidget(self.norm_combo); controls.addWidget(QLabel("E1")); self.norm_e1 = QDoubleSpinBox(); controls.addWidget(self.norm_e1); controls.addWidget(QLabel("E2")); self.norm_e2 = QDoubleSpinBox(); controls.addWidget(self.norm_e2); self.exclude_bad = QCheckBox("Exclude bad data"); self.exclude_bad.toggled.connect(self._quality_filter_changed); controls.addWidget(self.exclude_bad); controls.addWidget(QLabel("Label")); self.label_edit = QLineEdit(); self.label_edit.setPlaceholderText("segmentation label"); self.label_edit.setMaximumWidth(180); controls.addWidget(self.label_edit); self.save_button = QPushButton("Save"); self.save_button.setEnabled(False); self.save_button.clicked.connect(self.save_result); controls.addWidget(self.save_button); root.addLayout(controls)
         self.status = QLabel("Threshold preview; profiles use OD"); root.addWidget(self.status)
         self.setCentralWidget(central)
         self.norm_e1.valueChanged.connect(self._plot_selected); self.norm_e2.valueChanged.connect(self._plot_selected)
@@ -93,6 +98,12 @@ class SegmentationWindow(QMainWindow):
         lo, hi = float(self.scan.energies_eV.min()), float(self.scan.energies_eV.max())
         for spin, value in ((self.norm_e1, lo), (self.norm_e2, hi)):
             spin.setRange(lo, hi); spin.setValue(value)
+        # E1/E2 serve two modes with their own remembered values: the two
+        # reference energies, and the band of the band-mean normalization
+        # (default 291-292 eV, as in the PTEE-R2 window).
+        clamp = lambda e: min(max(e, lo), hi)
+        self._norm_pairs = {self.NORM_TWO_ENERGIES: (lo, hi), self.NORM_BAND: (clamp(291.0), clamp(292.0))}
+        self._norm_pair_mode: int | None = None
         self._normalization_changed(self.norm_combo.currentIndex())
         self.saved_label_combo.currentIndexChanged.connect(self._saved_label_changed)
 
@@ -166,10 +177,46 @@ class SegmentationWindow(QMainWindow):
         self.input_view.setImage(image, autoLevels=True, autoRange=True); self._draw_histogram(); self._threshold_changed()
 
     def _normalization_changed(self, index: int) -> None:
-        enabled = index == 2
+        if self._norm_pair_mode is not None:
+            self._norm_pairs[self._norm_pair_mode] = (self.norm_e1.value(), self.norm_e2.value())
+        enabled = index in self._norm_pairs
+        self._norm_pair_mode = index if enabled else None
+        if enabled:
+            for spin, value in zip((self.norm_e1, self.norm_e2), self._norm_pairs[index]):
+                spin.blockSignals(True); spin.setValue(value); spin.blockSignals(False)
         self.norm_e1.setEnabled(enabled)
         self.norm_e2.setEnabled(enabled)
         self._plot_selected()
+
+    def _pre_range(self) -> tuple[float, float]:
+        if self.pre_edge_range is not None:
+            return tuple(sorted(map(float, self.pre_edge_range)))
+        e = self.scan.energies_eV; n = max(1, min(3, len(e)))
+        return float(np.min(e[:n])), float(np.max(e[:n]))
+
+    def _normalize_profile(self, values: np.ndarray) -> np.ndarray:
+        """Profile normalization for display; modes 3-5 match the PTEE-R2 window."""
+        mode = self.norm_combo.currentIndex(); e = self.scan.energies_eV
+        values = np.asarray(values, dtype=np.float64).copy()
+        if mode == self.NORM_MINMAX:
+            lo, hi = np.nanmin(values), np.nanmax(values)
+            return (values - lo) / (hi - lo) if hi != lo else np.zeros_like(values)
+        if mode == self.NORM_TWO_ENERGIES:
+            a = np.interp(self.norm_e1.value(), e, values); b = np.interp(self.norm_e2.value(), e, values)
+            return (values - a) / (b - a) if b != a else np.zeros_like(values)
+        if mode < self.NORM_PRESUB:
+            return values
+        lo, hi = self._pre_range(); pre = (e >= lo) & (e <= hi)
+        if pre.any():
+            values = np.maximum(values - np.nanmean(values[pre]), 0.0)
+        if mode == self.NORM_ABSMAX:
+            d = np.nanmax(np.abs(values))
+        elif mode == self.NORM_BAND:
+            b1, b2 = sorted((self.norm_e1.value(), self.norm_e2.value())); band = (e >= b1) & (e <= b2)
+            d = np.nanmean(values[band]) if band.any() else np.interp(0.5 * (b1 + b2), e, values)
+        else:
+            return values
+        return values / d if np.isfinite(d) and d != 0 else np.zeros_like(values)
 
     def _select_new_mode(self) -> None:
         self.saved_label_combo.blockSignals(True)
@@ -464,11 +511,7 @@ class SegmentationWindow(QMainWindow):
             raw_values = self._profiles_by_id.get(cluster_id)
             if raw_values is None:
                 continue
-            values = raw_values.copy()
-            if self.norm_combo.currentIndex() == 0:
-                lo, hi = np.nanmin(values), np.nanmax(values); values = (values - lo) / (hi - lo) if hi != lo else np.zeros_like(values)
-            elif self.norm_combo.currentIndex() == 2:
-                a = np.interp(self.norm_e1.value(), self.scan.energies_eV, values); b = np.interp(self.norm_e2.value(), self.scan.energies_eV, values); values = (values - a) / (b - a) if b != a else np.zeros_like(values)
+            values = self._normalize_profile(raw_values)
             # Table sorting changes row indices; compare the stable cluster
             # identifier rather than the transient row number.
             selected = cluster_id in selected_ids
@@ -479,11 +522,7 @@ class SegmentationWindow(QMainWindow):
             width = 4 if selected else (2 if not selected_ids else 1)
             self.profile_plot.plot(self.scan.energies_eV, values, pen=pg.mkPen(color, width=width), name=f"Cluster {cluster_id}")
         if len(selected_values) > 1:
-            average = np.nanmean(selected_values, axis=0)
-            if self.norm_combo.currentIndex() == 0:
-                lo, hi = np.nanmin(average), np.nanmax(average); average = (average - lo) / (hi - lo) if hi != lo else np.zeros_like(average)
-            elif self.norm_combo.currentIndex() == 2:
-                a = np.interp(self.norm_e1.value(), self.scan.energies_eV, average); b = np.interp(self.norm_e2.value(), self.scan.energies_eV, average); average = (average - a) / (b - a) if b != a else np.zeros_like(average)
+            average = self._normalize_profile(np.nanmean(selected_values, axis=0))
             self.profile_plot.plot(self.scan.energies_eV, average, pen=pg.mkPen("#ffffff", width=6), name="Cluster 0 average")
 
     def save_result(self) -> None:

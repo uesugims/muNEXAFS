@@ -264,7 +264,11 @@ OD = log(I0 / I)
 GUI では、ヒストグラムとオーバーレイで選択領域をプレビューでき、クラスタごとに
 面積・「Good（良否）」フラグを管理、選択クラスタの平均スペクトル（および複数選択時は
 その平均）をプロットします。プロファイル正規化は `Min–max` / `None` /
-`Two energy values` から選べます。
+`Two energy values` に加え、PTEE-R² と同じ `Subtract pre-edge` /
+`Subtract pre-edge + Absolute max` / `Subtract pre-edge + mean over band`（E1–E2 が帯、
+既定 291–292 eV。プリエッジ範囲は Pre-map の設定に従う）から選べ、PTEE-R² で比較される
+のと同じ形でクラスタのスペクトルを確認できます。正規化は表示のみに作用し、保存される
+プロファイルは OD のままです。
 
 入力レイヤーとして正味吸収マップ・ピークマップのほか、単一エネルギーの画像を選べます:
 

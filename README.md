@@ -278,7 +278,11 @@ region (cluster) (`muaxis.processing.segmentation.segment_clusters`).
 The GUI previews the selected region with a histogram and overlay, tracks each
 cluster's area and a "Good" flag, and plots the mean spectrum of the selected
 clusters (and their average when several are selected). Profile normalization is
-`Min–max` / `None` / `Two energy values`.
+`Min–max` / `None` / `Two energy values`, or the PTEE-R² modes `Subtract pre-edge`
+/ `Subtract pre-edge + Absolute max` / `Subtract pre-edge + mean over band`
+(E1–E2 is the band, default 291–292 eV; the pre-edge range follows Pre-map), so
+cluster spectra can be inspected exactly as the PTEE-R² window will compare them.
+The normalization affects the display only; saved profiles stay in OD.
 
 Besides the net-absorption and peak maps, single-energy images can be chosen as
 the input layer:

@@ -264,3 +264,40 @@ class FittingBandNormalizationTests(unittest.TestCase):
         band = self.win._norm_band_mask()
         self.assertAlmostEqual(float(np.nanmean(data[band, 0, 0])), 1.0, places=6)
         self.assertAlmostEqual(float(np.nanmean(refs[0][band])), 1.0, places=6)
+
+
+class SegmentationProfileNormalizationTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.app = QApplication.instance() or QApplication([])
+
+    def setUp(self):
+        self.scan = _scan(n_energy=101, h=3, w=4)          # 280-300 eV, 0.2 eV steps
+        od = np.ones((101, 3, 4))
+        self.w = SegmentationWindow(self.scan, od[0], od, "OD", pre_edge_range=(280.0, 281.0))
+        e = self.scan.energies_eV
+        self.profile = 0.4 + 0.5 / (1.0 + np.exp(-(e - 288.0) / 1.6))
+
+    def tearDown(self):
+        self.w.close()
+
+    def test_offers_the_ptee_r2_normalizations(self):
+        modes = [self.w.norm_combo.itemText(i) for i in range(self.w.norm_combo.count())]
+        for mode in ("Subtract pre-edge", "Subtract pre-edge + Absolute max", "Subtract pre-edge + mean over band"):
+            self.assertIn(mode, modes)
+
+    def test_band_mode_defaults_to_291_292_and_keeps_two_energy_values(self):
+        self.w.norm_combo.setCurrentIndex(SegmentationWindow.NORM_TWO_ENERGIES)
+        self.w.norm_e1.setValue(285.0)
+        self.w.norm_combo.setCurrentIndex(SegmentationWindow.NORM_BAND)
+        self.assertAlmostEqual(self.w.norm_e1.value(), 291.0)
+        self.assertAlmostEqual(self.w.norm_e2.value(), 292.0)
+        self.w.norm_combo.setCurrentIndex(SegmentationWindow.NORM_TWO_ENERGIES)
+        self.assertAlmostEqual(self.w.norm_e1.value(), 285.0)
+
+    def test_band_mode_scales_band_mean_to_one_after_pre_edge(self):
+        self.w.norm_combo.setCurrentIndex(SegmentationWindow.NORM_BAND)
+        out = self.w._normalize_profile(self.profile)
+        e = self.scan.energies_eV
+        self.assertAlmostEqual(float(np.mean(out[(e >= 291.0) & (e <= 292.0)])), 1.0, places=6)
+        self.assertAlmostEqual(float(np.mean(out[(e >= 280.0) & (e <= 281.0)])), 0.0, places=2)

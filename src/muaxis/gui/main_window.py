@@ -1002,6 +1002,7 @@ class MainWindow(QMainWindow):
             self.scan, feature, od_stack, source_label, layer_data,
             od_frame=self._current_frame, saved_groups=saved_groups,
             saved_defaults=self._segmentation_config,
+            pre_edge_range=self._pre_edge_range(),
         )
         self._segmentation_windows.append(viewer)
         viewer.resultReady.connect(self._set_segmentation_result)
