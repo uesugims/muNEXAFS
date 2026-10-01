@@ -151,6 +151,10 @@ class SegmentationThresholdTests(unittest.TestCase):
     def tearDown(self):
         self.w.close()
 
+    def test_histogram_plot_does_not_pan_or_zoom_with_the_mouse(self):
+        vb = self.w.histogram.getPlotItem().getViewBox()
+        self.assertEqual(list(vb.state["mouseEnabled"]), [False, False])
+
     def test_default_thresholds_span_full_range_and_fill_boxes(self):
         lo, hi = self.w._thresholds()
         self.assertAlmostEqual(lo, 0.0)

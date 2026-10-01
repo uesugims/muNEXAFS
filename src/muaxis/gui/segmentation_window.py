@@ -79,6 +79,9 @@ class SegmentationWindow(QMainWindow):
         self.histogram = pg.PlotWidget(title="Input histogram (drag to set thresholds)"); self.histogram.setLabel("bottom", "Value"); self.histogram.setLabel("left", "Pixels"); histogram_panel.addWidget(self.histogram, 1); display_row.addLayout(histogram_panel, 2); root.addLayout(display_row, 3)
         # Dragging on the histogram moves whichever threshold is nearer the
         # cursor; the value boxes stay in sync.
+        # The histogram itself stays fixed: mouse drags and the wheel set the
+        # thresholds instead of panning or zooming the plot.
+        self.histogram.getPlotItem().getViewBox().setMouseEnabled(x=False, y=False)
         self.histogram.scene().sigMouseClicked.connect(self._histogram_clicked)
         self.histogram.scene().sigMouseMoved.connect(self._histogram_moved)
         self.low_edit.editingFinished.connect(self._edits_changed)
